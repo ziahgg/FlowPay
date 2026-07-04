@@ -101,11 +101,35 @@ backend/src/
    - `JwtAuthGuard` (route auth) and `RolesGuard` + `@Roles(...)` (authorization) are separate
      guards, composed as `@UseGuards(JwtAuthGuard, RolesGuard)` on any endpoint that needs both.
    - One-off idempotent scripts (e.g. dev/admin seeding) live in `src/scripts/`, run via
-     `ts-node src/scripts/<name>.ts` (see `npm run seed`), and reuse the `DataSource` exported from
-     `src/typeorm.config.ts` rather than bootstrapping the full Nest app.
+     `ts-node src/scripts/<name>.ts` (see `npm run seed`). Scripts that only need plain repository
+     access reuse the `DataSource` exported from `src/typeorm.config.ts`; scripts that must enforce
+     business rules owned by a service (e.g. creating ledger accounts) instead bootstrap a Nest
+     application context (`NestFactory.createApplicationContext(AppModule)`) and call that service
+     — never reimplement its logic against the tables directly.
+
+6. **The ledger is append-only and has exactly one write path.**
+   - `journal_entries`, `journal_lines`, and `account_balances` are written **only** through
+     `LedgerService.postEntry()` (entries/lines + the derived balance update, atomically) and
+     `LedgerService.ensureAccount()` (account + its zero balance row, atomically). No migration,
+     seed script, or other module may `INSERT`/`UPDATE` those tables directly — this is what keeps
+     "cached balance == SUM(journal lines)" true everywhere, forever.
+   - The journal is the source of truth; `account_balances` is a derived cache maintained
+     transactionally alongside every entry. If the two ever disagree, the journal wins.
+   - Every account uses the same sign convention: `balance = Σ(credit lines) − Σ(debit lines)`.
+     There is no per-kind flipping — this is what makes "treasury can go negative" fall out
+     naturally (it's the system's mirror image of what users hold) instead of being special-cased.
+   - A journal entry must balance to zero **per currency** independently, not just in aggregate —
+     required for future multi-currency entries (FX conversion, etc.) to be caught if malformed.
+   - `postEntry` locks the `account_balances` rows it touches with `SELECT ... FOR UPDATE`,
+     ordered by ascending account id in one statement — Postgres's own documented pattern for
+     avoiding deadlocks when transactions lock overlapping sets of rows in different orders.
+   - Accounts with a non-null `owner_user_id` (user wallets) may never go negative; accounts with a
+     null `owner_user_id` (treasury, fees, withdrawal_pending) may — they represent the platform's
+     counterparty position, not a user's funds.
 
 ## Local development
 
 See [README.md](README.md) for the quickstart. In short: `docker compose up` brings up Postgres +
 the API with hot reload; `npm run lint`, `npm run test`, and `npm run test:e2e` run inside
-`backend/`.
+`backend/`. `npm run test:integration` runs the Testcontainers-backed ledger integration suite and
+requires a local Docker daemon (see "Known simplifications" in [README.md](README.md)).
