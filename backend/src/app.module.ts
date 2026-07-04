@@ -6,6 +6,7 @@ import { DatabaseModule } from './database/database.module';
 import { DepositsModule } from './deposits/deposits.module';
 import { HealthModule } from './health/health.module';
 import { LedgerModule } from './ledger/ledger.module';
+import { TransfersModule } from './transfers/transfers.module';
 import { UsersModule } from './users/users.module';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module';
 
@@ -20,6 +21,7 @@ import { WithdrawalsModule } from './withdrawals/withdrawals.module';
     AccountsModule,
     DepositsModule,
     WithdrawalsModule,
+    TransfersModule,
   ],
 })
 export class AppModule {}

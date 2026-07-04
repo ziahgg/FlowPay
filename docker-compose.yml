@@ -37,6 +37,8 @@ services:
       JWT_EXPIRES_IN: 15m
       SEED_ADMIN_PASSWORD: ChangeMe123!
       DEPOSIT_MAX_AMOUNT: 50000
+      TRANSFER_FEE_FLAT: 0
+      IDEMPOTENCY_STALE_MS: 30000
     ports:
       - "3000:3000"
     volumes:

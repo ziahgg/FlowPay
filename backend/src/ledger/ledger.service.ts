@@ -5,6 +5,7 @@ import { DataSource, EntityManager, FindOptionsWhere, IsNull, Repository } from 
 import { Account } from './entities/account.entity';
 import { Currency } from './entities/currency.entity';
 import { JournalEntry } from './entities/journal-entry.entity';
+import { JournalEntryType } from './entities/journal-entry-type.enum';
 import { JournalLine } from './entities/journal-line.entity';
 import { JournalLineDirection } from './entities/journal-line-direction.enum';
 import { InsufficientFundsException } from './exceptions/insufficient-funds.exception';
@@ -232,6 +233,35 @@ export class LedgerService {
       skip: (pagination.page - 1) * pagination.limit,
       take: pagination.limit,
     });
+
+    return { items, total };
+  }
+
+  /**
+   * Generic read across every account owned by a user (all currencies, all kinds owned by them --
+   * in practice just their wallets), optionally filtered by entry type. Lets feature modules (e.g.
+   * transfers) build an activity view without holding their own repository over ledger tables.
+   */
+  async listJournalLinesForOwner(
+    ownerUserId: string,
+    filter: { type?: JournalEntryType },
+    pagination: { page: number; limit: number },
+  ): Promise<PaginatedResult<JournalLine>> {
+    const query = this.journalLineRepository
+      .createQueryBuilder('line')
+      .innerJoin('line.account', 'account')
+      .innerJoinAndSelect('line.entry', 'entry')
+      .where('account.ownerUserId = :ownerUserId', { ownerUserId });
+
+    if (filter.type) {
+      query.andWhere('entry.type = :type', { type: filter.type });
+    }
+
+    const [items, total] = await query
+      .orderBy('line.createdAt', 'DESC')
+      .skip((pagination.page - 1) * pagination.limit)
+      .take(pagination.limit)
+      .getManyAndCount();
 
     return { items, total };
   }

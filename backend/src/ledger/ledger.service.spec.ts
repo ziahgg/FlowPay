@@ -14,6 +14,17 @@ describe('LedgerService', () => {
   let service: LedgerService;
   let managerQuery: jest.Mock;
   let dataSource: { transaction: jest.Mock; query: jest.Mock };
+  let journalLineRepository: { createQueryBuilder: jest.Mock };
+  let queryBuilder: {
+    innerJoin: jest.Mock;
+    innerJoinAndSelect: jest.Mock;
+    where: jest.Mock;
+    andWhere: jest.Mock;
+    orderBy: jest.Mock;
+    skip: jest.Mock;
+    take: jest.Mock;
+    getManyAndCount: jest.Mock;
+  };
 
   const fakeManager = () => ({
     query: managerQuery,
@@ -43,13 +54,24 @@ describe('LedgerService', () => {
       transaction: jest.fn((cb: (manager: unknown) => unknown) => cb(fakeManager())),
       query: jest.fn(),
     };
+    queryBuilder = {
+      innerJoin: jest.fn().mockReturnThis(),
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn(),
+    };
+    journalLineRepository = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         LedgerService,
         { provide: getDataSourceToken(), useValue: dataSource },
         { provide: getRepositoryToken(Currency), useValue: {} },
-        { provide: getRepositoryToken(JournalLine), useValue: {} },
+        { provide: getRepositoryToken(JournalLine), useValue: journalLineRepository },
       ],
     }).compile();
 
@@ -194,6 +216,35 @@ describe('LedgerService', () => {
 
       expect(result).toBe(existing);
       expect(managerQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listJournalLinesForOwner', () => {
+    it('joins accounts and filters by owner and entry type', async () => {
+      queryBuilder.getManyAndCount.mockResolvedValue([[{ id: 'line-1' }], 1]);
+
+      const result = await service.listJournalLinesForOwner(
+        'user-1',
+        { type: JournalEntryType.TRANSFER },
+        { page: 1, limit: 20 },
+      );
+
+      expect(journalLineRepository.createQueryBuilder).toHaveBeenCalledWith('line');
+      expect(queryBuilder.where).toHaveBeenCalledWith('account.ownerUserId = :ownerUserId', {
+        ownerUserId: 'user-1',
+      });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('entry.type = :type', {
+        type: JournalEntryType.TRANSFER,
+      });
+      expect(result).toEqual({ items: [{ id: 'line-1' }], total: 1 });
+    });
+
+    it('omits the entry-type filter when none is given', async () => {
+      queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
+
+      await service.listJournalLinesForOwner('user-1', {}, { page: 1, limit: 20 });
+
+      expect(queryBuilder.andWhere).not.toHaveBeenCalled();
     });
   });
 });

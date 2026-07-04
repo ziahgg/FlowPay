@@ -135,6 +135,27 @@ backend/src/
      matter within the same transaction. Omit the manager for a standalone entry (e.g. a deposit)
      and `postEntry()` opens and owns its own transaction.
 
+7. **Money-moving POST endpoints that a client might retry are idempotent via `IdempotencyService`.**
+   - `common/idempotency/` is reusable infrastructure (used by transfers, intended for FX
+     conversion next) — it is not specific to any one feature module.
+   - The controller requires an `Idempotency-Key` header (400 if missing) and the service wraps
+     the actual handler in `IdempotencyService.run({ userId, key, endpoint, requestPayload,
+     successStatus, handler })`.
+   - Mechanically: an immediately-committed `INSERT ... ON CONFLICT (user_id, key) DO NOTHING`
+     claims the key before the handler runs (a fast, real mutual-exclusion lock, deliberately not
+     part of the handler's own transaction — see the crash trade-off below); a concurrent duplicate
+     that loses the race gets 409 while the first is still `processing`, or a replayed
+     `{statusCode, body}` once it's `completed`. A different payload under the same key is a 422.
+   - Every completed outcome is cached and replayed byte-identical on retry — including a
+     deterministic `HttpException` (e.g. insufficient funds, unknown recipient): that's the correct
+     idempotency semantics (matches Stripe et al.), not a bug. An *unexpected* (non-`HttpException`)
+     error deletes the key instead, so a genuine retry can actually re-attempt the operation.
+   - Known trade-off: marking `processing` and marking `completed` are separate commits on purpose
+     (so a concurrent duplicate gets a fast 409 instead of blocking on the handler's transaction).
+     This means a crash between them leaves a stuck `processing` row. Mitigated, not eliminated, by
+     `IDEMPOTENCY_STALE_MS`: a `processing` row older than that threshold is reclaimed on the next
+     attempt with that key instead of returning 409 forever.
+
 ## Local development
 
 See [README.md](README.md) for the quickstart. In short: `docker compose up` brings up Postgres +

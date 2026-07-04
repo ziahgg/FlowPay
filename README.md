@@ -133,6 +133,67 @@ wallet returns `422`; a non-admin calling approve/reject returns `403`; deciding
 already-decided request returns `409` (the second admin's `SELECT ... FOR UPDATE` blocks until the
 first's transaction commits, then re-reads the now-decided row and fails the pending-status check).
 
+## Transfers quickstart
+
+Instant transfers between users. `Idempotency-Key` is required on every request — this is the
+flagship demonstration of safe-retry semantics in the API (see the design section below).
+
+```bash
+# transfer funds -- the Idempotency-Key header is required
+curl -X POST http://localhost:3000/api/v1/transfers \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <accessToken>" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"recipientEmail":"jane@example.com","currency":"USD","amount":"25.00","note":"lunch"}'
+# => { "entryId": "...", "currency": "USD", "amount": "25.00", "balance": "175.00000000" }
+# (never the recipient's balance -- see below)
+
+# own transfer history, sent and received
+curl http://localhost:3000/api/v1/transfers -H "Authorization: Bearer <accessToken>"
+```
+
+Retrying the **exact same request** with the **same key** (e.g. because the client didn't see the
+first response) is safe: it returns the identical cached response and never posts a second ledger
+entry. Reusing the same key with a **different** payload is rejected (`422`) rather than silently
+executing the new request.
+
+### Payments: idempotency & concurrency
+
+- **`Idempotency-Key` is required** on `POST /transfers` (`400` if missing). The key is scoped to
+  `(user_id, key)` — two different users may reuse the same literal key string without conflict.
+- **How a key is claimed.** `IdempotencyService.run()` first does an immediately-committed
+  `INSERT INTO idempotency_keys ... ON CONFLICT (user_id, key) DO NOTHING` — a real mutual-exclusion
+  lock, deliberately committed *before* the transfer's own transaction starts (not as part of it).
+  Whichever request wins the insert runs the handler; every other concurrent request with the same
+  key sees the row and either gets `409` (still `processing`) or the cached `{statusCode, body}`
+  once it's `completed`.
+  - This module is written as reusable infrastructure (`common/idempotency/`), not something
+    transfer-specific — FX conversion will use the same `IdempotencyService.run()` later.
+- **What gets cached.** Every *completed* outcome is cached and replayed byte-identical on a
+  retry — including a deterministic rejection like insufficient funds (`422`) or an unknown
+  recipient (`404`). This matches how idempotency keys behave in the systems it's modeled on
+  (Stripe, etc.): the key represents one attempt at *this exact operation*, so if it failed for a
+  reason tied to the payload, retrying with the same key replays the same failure — the client
+  must use a new key to genuinely try again (e.g. after depositing more funds). An *unexpected*
+  (non-`HttpException`) error is **not** cached: the key is deleted instead, so a real retry can
+  actually re-attempt the operation rather than being poisoned by an infrastructure blip.
+- **Known trade-off, stated plainly.** Marking a key `processing` and later marking it `completed`
+  are two separate commits, on purpose — that's what lets a concurrent duplicate get a fast `409`
+  instead of blocking for the full duration of the transfer's own transaction. The cost: a crash
+  between those two commits leaves the row stuck at `processing` forever, with no automatic
+  recovery. Mitigation, not elimination: `IDEMPOTENCY_STALE_MS` (default 30s) — a `processing` row
+  older than that is treated as abandoned and reclaimed on the next attempt with that key, instead
+  of returning `409` indefinitely. A proper fix (an outbox/saga that guarantees the ledger commit
+  and the key's completion move together) is out of scope here.
+- **The ledger entry itself** is a normal `LedgerService.postEntry()` — debit sender wallet, credit
+  recipient wallet, and (only when `TRANSFER_FEE_FLAT` is nonzero) a third line crediting
+  `fees[currency]`. The fee is additive: the sender is debited `amount + fee`, the recipient always
+  receives exactly `amount`. This composes with everything in the ledger's own design section
+  above — same sign convention, same per-currency balancing, same overdraft guard.
+- **Concurrency is tested at the HTTP layer**, not just the ledger: `N` parallel requests with the
+  *same* idempotency key produce exactly one journal entry; `N` parallel *distinct* transfers that
+  jointly exceed a wallet's balance let exactly the affordable subset through, and the balance
+  never goes negative.
+
 ## Known simplifications
 
 - **No refresh tokens.** Access tokens are short-lived (15 minutes, `JWT_EXPIRES_IN`) and there is
@@ -145,6 +206,10 @@ first's transaction commits, then re-reads the now-decided row and fails the pen
 - **`withdrawal_requests.settle_entry_id` is reused for both outcomes**: it holds the settle entry
   id on approval and the release entry id on rejection (there is no separate `release_entry_id`
   column), matching the originally specified schema.
+- **An idempotency key can get stuck `processing`** if the process crashes between committing the
+  underlying operation and marking the key `completed` (see "Payments: idempotency & concurrency"
+  above). `IDEMPOTENCY_STALE_MS` reclaims it on the next attempt rather than blocking forever, but
+  this is a mitigation, not a full fix — a proper fix needs an outbox/saga pattern, out of scope here.
 
 Useful scripts (run from `backend/`):
 

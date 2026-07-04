@@ -16,6 +16,11 @@ export const envSchema = z.object({
     .string()
     .regex(/^\d+(\.\d{1,8})?$/, 'DEPOSIT_MAX_AMOUNT must be a positive decimal string')
     .default('50000'),
+  TRANSFER_FEE_FLAT: z
+    .string()
+    .regex(/^\d+(\.\d{1,8})?$/, 'TRANSFER_FEE_FLAT must be a non-negative decimal string')
+    .default('0'),
+  IDEMPOTENCY_STALE_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;
