@@ -12,6 +12,10 @@ export const envSchema = z.object({
   JWT_SECRET: z.string().min(32).default('dev-only-insecure-secret-change-me-please-32chars'),
   JWT_EXPIRES_IN: z.string().min(1).default('15m'),
   SEED_ADMIN_PASSWORD: z.string().min(8).default('ChangeMe123!'),
+  DEPOSIT_MAX_AMOUNT: z
+    .string()
+    .regex(/^\d+(\.\d{1,8})?$/, 'DEPOSIT_MAX_AMOUNT must be a positive decimal string')
+    .default('50000'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

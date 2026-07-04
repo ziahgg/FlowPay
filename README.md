@@ -96,6 +96,43 @@ curl "http://localhost:3000/api/v1/accounts/USD/transactions?page=1&limit=20" \
 - **One write path.** All other modules call `LedgerService.postEntry()` / `ensureAccount()` —
   nothing else touches `journal_entries`, `journal_lines`, or `account_balances`. See CLAUDE.md.
 
+## Deposits & withdrawals quickstart
+
+Deposits are simulated and instant. Withdrawals follow a maker-checker (two-step approval) pattern
+standard in regulated payment institutions: the user's request immediately **holds** the funds so
+they can't be double-spent while pending, and a separate admin decision either **settles** (moves
+the hold to treasury) or **releases** (returns the hold to the user's wallet) it.
+
+```bash
+# deposit (instant, capped by DEPOSIT_MAX_AMOUNT)
+curl -X POST http://localhost:3000/api/v1/deposits \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <accessToken>" \
+  -d '{"currency":"USD","amount":"200.00"}'
+# => { "currency": "USD", "amount": "200.00", "balance": "200.00000000" }
+
+# request a withdrawal -- funds are held immediately
+curl -X POST http://localhost:3000/api/v1/withdrawals \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <accessToken>" \
+  -d '{"currency":"USD","amount":"50.00","destination":"IBAN-SIMULATED-123"}'
+# => { "id": "...", "status": "pending", "holdEntryId": "...", ... }
+
+# own withdrawal history
+curl http://localhost:3000/api/v1/withdrawals -H "Authorization: Bearer <accessToken>"
+
+# admin: list pending requests
+curl "http://localhost:3000/api/v1/admin/withdrawals?status=pending" \
+  -H "Authorization: Bearer <adminAccessToken>"
+
+# admin: approve (settles the hold to treasury) or reject (releases it back to the wallet)
+curl -X POST http://localhost:3000/api/v1/admin/withdrawals/<id>/approve -H "Authorization: Bearer <adminAccessToken>"
+curl -X POST http://localhost:3000/api/v1/admin/withdrawals/<id>/reject  -H "Authorization: Bearer <adminAccessToken>"
+```
+
+A deposit above `DEPOSIT_MAX_AMOUNT` returns `400`; a withdrawal request that would overdraft the
+wallet returns `422`; a non-admin calling approve/reject returns `403`; deciding an
+already-decided request returns `409` (the second admin's `SELECT ... FOR UPDATE` blocks until the
+first's transaction commits, then re-reads the now-decided row and fails the pending-status check).
+
 ## Known simplifications
 
 - **No refresh tokens.** Access tokens are short-lived (15 minutes, `JWT_EXPIRES_IN`) and there is
@@ -105,6 +142,9 @@ curl "http://localhost:3000/api/v1/accounts/USD/transactions?page=1&limit=20" \
   spins up a real, disposable Postgres via Testcontainers. It is not wired into `.gitlab-ci.yml`
   because the current CI runner image (`node:20`) has no Docker socket available; running it in CI
   would need a Docker-in-Docker-enabled runner.
+- **`withdrawal_requests.settle_entry_id` is reused for both outcomes**: it holds the settle entry
+  id on approval and the release entry id on rejection (there is no separate `release_entry_id`
+  column), matching the originally specified schema.
 
 Useful scripts (run from `backend/`):
 

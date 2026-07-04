@@ -126,6 +126,14 @@ backend/src/
    - Accounts with a non-null `owner_user_id` (user wallets) may never go negative; accounts with a
      null `owner_user_id` (treasury, fees, withdrawal_pending) may — they represent the platform's
      counterparty position, not a user's funds.
+   - `postEntry()` takes an optional trailing `EntityManager`. Pass one whenever the entry must be
+     atomic with a write to another module's own table (e.g. a withdrawal request row) — see
+     `WithdrawalsService.approve()`/`reject()`, which lock the request row with
+     `manager.findOne(..., { lock: { mode: 'pessimistic_write' } })` and pass that same `manager`
+     into `postEntry()`, so the lock, the entry, and the status update commit or roll back
+     together. Without this, a maker-checker guard's row lock would be meaningless — locks only
+     matter within the same transaction. Omit the manager for a standalone entry (e.g. a deposit)
+     and `postEntry()` opens and owns its own transaction.
 
 ## Local development
 

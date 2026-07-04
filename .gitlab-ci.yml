@@ -37,6 +37,7 @@ test:
     JWT_SECRET: ci-only-insecure-secret-change-me-please-32chars
     JWT_EXPIRES_IN: 15m
     SEED_ADMIN_PASSWORD: ChangeMe123!
+    DEPOSIT_MAX_AMOUNT: 50000
     POSTGRES_USER: flowpay
     POSTGRES_PASSWORD: flowpay
     POSTGRES_DB: flowpay
