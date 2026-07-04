@@ -1,0 +1,14 @@
+.status-pending {
+  --mat-chip-label-text-color: #8a6100;
+  --mdc-chip-elevated-container-color: #fff3d6;
+}
+
+.status-approved {
+  --mat-chip-label-text-color: #1e6b3c;
+  --mdc-chip-elevated-container-color: #e1f5e9;
+}
+
+.status-rejected {
+  --mat-chip-label-text-color: #a3271f;
+  --mdc-chip-elevated-container-color: #fbe4e2;
+}

@@ -1,0 +1,32 @@
+.request-card {
+  margin-bottom: 2.5rem;
+}
+
+.request-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-top: 0.5rem;
+
+  mat-form-field {
+    width: 160px;
+  }
+}
+
+.destination-field {
+  width: 260px !important;
+}
+
+.submit-button {
+  height: 56px;
+  margin-top: 4px;
+}
+
+.history-header {
+  margin-top: 0;
+}
+
+.withdrawals-table {
+  width: 100%;
+}

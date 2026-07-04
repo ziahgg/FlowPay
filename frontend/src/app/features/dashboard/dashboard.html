@@ -1,0 +1,44 @@
+<div class="page-header">
+  <h1>Dashboard</h1>
+</div>
+
+<section class="quick-actions">
+  <button mat-flat-button color="primary" type="button" (click)="openDeposit()">
+    <mat-icon>add_card</mat-icon>
+    Deposit
+  </button>
+  <button mat-stroked-button type="button" (click)="goToTransfer()">
+    <mat-icon>swap_horiz</mat-icon>
+    Transfer
+  </button>
+  <button mat-stroked-button type="button" (click)="goToWithdrawals()">
+    <mat-icon>north_east</mat-icon>
+    Withdraw
+  </button>
+  <button
+    mat-stroked-button
+    type="button"
+    disabled
+    matTooltip="FX conversion is coming soon"
+  >
+    <mat-icon>currency_exchange</mat-icon>
+    Convert
+  </button>
+</section>
+
+@if (loading()) {
+  <div class="loading-state">
+    <mat-progress-spinner mode="indeterminate" diameter="40" />
+  </div>
+} @else if (balances().length === 0) {
+  <div class="empty-state">
+    <mat-icon>account_balance_wallet</mat-icon>
+    <p>No balances yet — make a deposit to get started.</p>
+  </div>
+} @else {
+  <div class="balances-grid">
+    @for (balance of balances(); track balance.currency) {
+      <app-balance-card [balance]="balance" />
+    }
+  </div>
+}

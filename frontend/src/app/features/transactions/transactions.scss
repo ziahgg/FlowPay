@@ -1,0 +1,21 @@
+.currency-filter {
+  width: 140px;
+}
+
+.transactions-table {
+  width: 100%;
+}
+
+.direction-credit {
+  --mat-chip-label-text-color: var(--mat-sys-primary);
+  --mdc-chip-elevated-container-color: color-mix(in srgb, var(--mat-sys-primary) 12%, transparent);
+}
+
+.direction-debit {
+  --mat-chip-label-text-color: var(--mat-sys-on-surface-variant);
+  --mdc-chip-elevated-container-color: color-mix(
+    in srgb,
+    var(--mat-sys-on-surface-variant) 12%,
+    transparent
+  );
+}

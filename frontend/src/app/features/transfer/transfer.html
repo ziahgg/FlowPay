@@ -1,0 +1,142 @@
+<div class="page-header">
+  <h1>Transfer</h1>
+</div>
+
+<mat-card appearance="outlined" class="transfer-card">
+  <mat-card-header>
+    <mat-card-title>Send money</mat-card-title>
+    <mat-card-subtitle>Instant transfer to another FlowPay user</mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <form [formGroup]="form" (ngSubmit)="submit()" class="transfer-form">
+      <mat-form-field appearance="outline">
+        <mat-label>Recipient email</mat-label>
+        <input matInput type="email" formControlName="recipientEmail" placeholder="jane@example.com" />
+        @if (form.controls.recipientEmail.hasError('required')) {
+          <mat-error>Recipient email is required.</mat-error>
+        } @else if (form.controls.recipientEmail.hasError('email')) {
+          <mat-error>Enter a valid email address.</mat-error>
+        }
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Currency</mat-label>
+        <mat-select formControlName="currency">
+          @for (balance of balances(); track balance.currency) {
+            <mat-option [value]="balance.currency">{{ balance.currency }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Amount</mat-label>
+        <input matInput formControlName="amount" placeholder="25.00" />
+        @if (form.controls.amount.hasError('required')) {
+          <mat-error>Amount is required.</mat-error>
+        } @else if (form.controls.amount.hasError('pattern')) {
+          <mat-error>Enter a positive number with up to 8 decimal places.</mat-error>
+        }
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="note-field">
+        <mat-label>Note (optional)</mat-label>
+        <input matInput formControlName="note" placeholder="e.g. lunch" maxlength="500" />
+      </mat-form-field>
+
+      @if (networkError()) {
+        <div class="network-error-banner">
+          <mat-icon>wifi_off</mat-icon>
+          <span>
+            Network error — we don't know if your request reached the server. Retrying is safe:
+            it reuses the same request id, so the transfer will never be sent twice.
+          </span>
+        </div>
+      }
+
+      <button
+        mat-flat-button
+        color="primary"
+        type="submit"
+        class="submit-button"
+        [disabled]="submitting()"
+      >
+        @if (submitting()) {
+          <mat-progress-spinner diameter="20" mode="indeterminate" />
+        } @else if (networkError()) {
+          Retry
+        } @else {
+          Send
+        }
+      </button>
+    </form>
+  </mat-card-content>
+</mat-card>
+
+<div class="page-header history-header">
+  <h1>History</h1>
+</div>
+
+@if (loadingHistory()) {
+  <div class="loading-state">
+    <mat-progress-spinner mode="indeterminate" diameter="40" />
+  </div>
+} @else if (history().length === 0) {
+  <div class="empty-state">
+    <mat-icon>swap_horiz</mat-icon>
+    <p>No transfers yet.</p>
+  </div>
+} @else {
+  <table mat-table [dataSource]="history()" class="transfer-table">
+    <ng-container matColumnDef="createdAt">
+      <th mat-header-cell *matHeaderCellDef>Date</th>
+      <td mat-cell *matCellDef="let item">{{ item.createdAt | date: 'medium' }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="direction">
+      <th mat-header-cell *matHeaderCellDef>Direction</th>
+      <td mat-cell *matCellDef="let item">
+        <mat-chip-set>
+          <mat-chip [class.direction-sent]="item.direction === 'sent'" [class.direction-received]="item.direction === 'received'">
+            {{ item.direction === 'sent' ? 'Sent' : 'Received' }}
+          </mat-chip>
+        </mat-chip-set>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="currency">
+      <th mat-header-cell *matHeaderCellDef>Currency</th>
+      <td mat-cell *matCellDef="let item">{{ item.currency }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="amount">
+      <th mat-header-cell *matHeaderCellDef>Amount</th>
+      <td mat-cell *matCellDef="let item">{{ item.amount | currencyAmount: decimalsFor(item.currency) }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="counterpartyEmail">
+      <th mat-header-cell *matHeaderCellDef>
+        {{ '' }}
+      </th>
+      <td mat-cell *matCellDef="let item">
+        {{ item.direction === 'sent' ? 'To' : 'From' }} {{ item.counterpartyEmail || 'unknown' }}
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="note">
+      <th mat-header-cell *matHeaderCellDef>Note</th>
+      <td mat-cell *matCellDef="let item">{{ item.note || '—' }}</td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+  </table>
+
+  <mat-paginator
+    [length]="total()"
+    [pageIndex]="pageIndex()"
+    [pageSize]="pageSize()"
+    [pageSizeOptions]="[10, 20, 50]"
+    (page)="onPageChange($event)"
+  />
+}

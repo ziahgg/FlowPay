@@ -1,0 +1,32 @@
+<mat-toolbar color="primary" class="toolbar">
+  <span class="brand">FlowPay</span>
+
+  @if (auth.isAuthenticated()) {
+    <nav class="nav-links">
+      <a mat-button routerLink="/dashboard" routerLinkActive="active-link">Dashboard</a>
+      <a mat-button routerLink="/transactions" routerLinkActive="active-link">Transactions</a>
+      <a mat-button routerLink="/withdrawals" routerLinkActive="active-link">Withdrawals</a>
+      <a mat-button routerLink="/transfer" routerLinkActive="active-link">Transfer</a>
+      @if (auth.isAdmin()) {
+        <a mat-button routerLink="/admin/withdrawals" routerLinkActive="active-link">Admin</a>
+      }
+    </nav>
+
+    <span class="spacer"></span>
+
+    <span class="user-email">{{ auth.currentUser()?.email }}</span>
+    <button
+      mat-icon-button
+      type="button"
+      aria-label="Log out"
+      matTooltip="Log out"
+      (click)="logout()"
+    >
+      <mat-icon>logout</mat-icon>
+    </button>
+  }
+</mat-toolbar>
+
+<main class="content">
+  <router-outlet />
+</main>

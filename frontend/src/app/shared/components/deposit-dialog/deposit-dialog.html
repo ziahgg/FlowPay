@@ -1,0 +1,37 @@
+<h2 mat-dialog-title>Deposit funds</h2>
+
+<form [formGroup]="form" (ngSubmit)="submit()">
+  <mat-dialog-content class="deposit-form">
+    <mat-form-field appearance="outline">
+      <mat-label>Currency</mat-label>
+      <mat-select formControlName="currency">
+        @for (balance of data.balances; track balance.currency) {
+          <mat-option [value]="balance.currency">{{ balance.currency }}</mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline">
+      <mat-label>Amount</mat-label>
+      <input matInput formControlName="amount" placeholder="100.00" />
+      @if (form.controls.amount.hasError('required')) {
+        <mat-error>Amount is required.</mat-error>
+      } @else if (form.controls.amount.hasError('pattern')) {
+        <mat-error>Enter a positive number with up to 8 decimal places.</mat-error>
+      }
+    </mat-form-field>
+
+    <p class="hint">This is a simulated, instant deposit — no real money moves.</p>
+  </mat-dialog-content>
+
+  <mat-dialog-actions align="end">
+    <button mat-button type="button" (click)="cancel()">Cancel</button>
+    <button mat-flat-button color="primary" type="submit" [disabled]="submitting()">
+      @if (submitting()) {
+        <mat-progress-spinner diameter="20" mode="indeterminate" />
+      } @else {
+        Deposit
+      }
+    </button>
+  </mat-dialog-actions>
+</form>

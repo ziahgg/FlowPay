@@ -37,7 +37,18 @@ backend/src/
     <domain>.service.spec.ts
 ```
 
-`frontend/` will be an Angular application added in a later step. It is currently a placeholder.
+`frontend/` is the Angular "Client Console" — a standalone-components SPA that talks to the backend
+only through `/api/v1`, proxied in dev (see `frontend/proxy.conf.js`) since the backend does not
+enable CORS.
+
+```
+frontend/src/app/
+  core/          singletons: models (mirror backend DTOs exactly), one *.service.ts per backend
+                 module, functional interceptors (auth, error), functional guards (auth/admin/guest)
+  shared/        reusable presentational components (dialogs, cards, chips) and pipes
+  features/      one folder per page/route (auth, dashboard, transactions, withdrawals, transfer,
+                 admin), lazy-loaded via `loadComponent` in app.routes.ts
+```
 
 ## Tech stack
 
@@ -48,9 +59,11 @@ backend/src/
 - **Logging**: `nestjs-pino` (structured JSON logs), correlated by a request-id middleware
 - **Testing**: Jest for unit tests, a separate Jest e2e config against a real Postgres instance
 - **Lint/format**: ESLint (flat config, typescript-eslint) + Prettier
-- **CI**: GitLab CI, stages `lint -> test -> build`, `test` stage runs against a real `postgres`
-  service container
-- **Containers**: Docker Compose for local dev (Postgres + backend with hot reload)
+- **Frontend**: Angular 22, standalone components, Angular Material (Material 3 theming), signals
+  for local component state, Vitest for unit tests (no Karma/Chrome dependency)
+- **CI**: GitLab CI, stages `lint -> test -> build`, backend `test` stage runs against a real
+  `postgres` service container; frontend jobs run the same three stages independently
+- **Containers**: Docker Compose for local dev (Postgres + backend + frontend, all with hot reload)
 
 ## Hard conventions (do not violate)
 
@@ -156,9 +169,39 @@ backend/src/
      `IDEMPOTENCY_STALE_MS`: a `processing` row older than that threshold is reclaimed on the next
      attempt with that key instead of returning 409 forever.
 
+8. **Frontend conventions**
+   - Every model in `core/models/` mirrors a backend response/request DTO field-for-field
+     (including which fields are decimal *strings*) — the frontend never redefines the API
+     contract, it copies it.
+   - `AuthService` holds the JWT + `UserProfileDto` from login/register as one JSON blob in
+     `localStorage`, exposed as signals (`currentUser`, `isAuthenticated`, `isAdmin`). This is
+     explicitly a demo-grade trade-off vs an httpOnly cookie — see "Known simplifications" in
+     [README.md](README.md).
+   - `authInterceptor` (attaches `Authorization`) and `errorInterceptor` (toasts every
+     `HttpErrorResponse`, logs out and redirects on 401) are functional interceptors registered via
+     `provideHttpClient(withInterceptors([...]))`, not classes.
+   - `authGuard`/`adminGuard`/`guestGuard` are functional `CanActivateFn`s, not `CanActivate`
+     classes — same reasoning as the interceptors: less boilerplate, no DI token indirection.
+   - **Never reset a submitted `[formGroup]` with `this.form.reset(value)` alone.** `reset()` only
+     clears the `FormGroup`'s own value/touched/dirty state; the enclosing `FormGroupDirective`
+     keeps its `submitted` flag `true` from the earlier submit, and Material's default
+     `ErrorStateMatcher` treats `submitted` like `touched` — so the freshly-cleared required fields
+     immediately render as invalid with no user interaction. Inject the directive
+     (`@ViewChild(FormGroupDirective)`) and call `formDirective.resetForm(value)` instead, which
+     resets both together. (Caught by manually exercising the transfer form after a successful
+     send — the empty recipient/amount fields lit up red immediately.)
+   - The transfer form's Idempotency-Key handling is the reference implementation for any future
+     retryable mutation: generate the key with `crypto.randomUUID()` on the *first* attempt of a
+     logical operation, hold it in a plain field (not a signal — it doesn't drive the template),
+     reuse it across retries triggered by a network error (`HttpErrorResponse.status === 0`), and
+     clear it on success or on any definitive server response (a real 4xx/5xx means the server
+     already decided, so the *next* attempt is a new logical operation and needs a new key).
+
 ## Local development
 
 See [README.md](README.md) for the quickstart. In short: `docker compose up` brings up Postgres +
-the API with hot reload; `npm run lint`, `npm run test`, and `npm run test:e2e` run inside
-`backend/`. `npm run test:integration` runs the Testcontainers-backed ledger integration suite and
-requires a local Docker daemon (see "Known simplifications" in [README.md](README.md)).
+the API + the Angular dev server, all with hot reload. Backend: `npm run lint`, `npm run test`, and
+`npm run test:e2e` run inside `backend/`; `npm run test:integration` runs the Testcontainers-backed
+ledger integration suite and requires a local Docker daemon (see "Known simplifications" in
+[README.md](README.md)). Frontend: `npm run lint`, `npm test`, and `npm run build` run inside
+`frontend/`.

@@ -1,0 +1,7 @@
+<mat-card appearance="outlined" class="balance-card">
+  <mat-card-content>
+    <div class="currency">{{ balance().currency }}</div>
+    <div class="amount">{{ balance().balance | currencyAmount: balance().decimals }}</div>
+    <div class="label">Balance</div>
+  </mat-card-content>
+</mat-card>

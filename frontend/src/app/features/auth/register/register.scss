@@ -1,0 +1,31 @@
+.auth-page {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 3rem;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-top: 0.5rem;
+}
+
+.submit-button {
+  margin-top: 0.5rem;
+  height: 40px;
+}
+
+.auth-footer {
+  display: flex;
+  gap: 0.375rem;
+  padding: 1rem;
+  font-size: 0.875rem;
+  color: var(--mat-sys-on-surface-variant);
+}

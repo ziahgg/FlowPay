@@ -4,19 +4,22 @@ FlowPay is a portfolio-grade **simulated** crypto & fiat payment and trading pla
 the architecture of regulated payment institutions. All money, transfers, and market activity are
 simulated in Postgres — there is no real currency and no real blockchain involved. The backend is
 a NestJS modular monolith (designed so modules can later be split into microservices); the
-frontend (Angular) will be added in a later step.
+frontend is an Angular "Client Console" SPA that talks to it over `/api/v1`.
 
 ## Quickstart
 
 Requirements: Docker and Docker Compose.
 
 ```bash
-# bring up Postgres + the API (with hot reload)
+# bring up Postgres + the API + the Angular dev server (all with hot reload)
 docker compose up
 
 # API is now available at:
 curl http://localhost:3000/api/v1/health
 # => { "status": "ok", "db": "up" }
+
+# Client Console is now available at:
+open http://localhost:4200
 ```
 
 ## Backend development (without Docker)
@@ -29,6 +32,26 @@ npm run migration:run  # applies any pending schema migrations
 npm run seed            # idempotent: creates admin@flowpay.dev if missing
 npm run start:dev
 ```
+
+## Frontend development (without Docker)
+
+```bash
+cd frontend
+npm install
+npm start   # ng serve, proxying /api to http://localhost:3000 (see proxy.conf.js)
+```
+
+Requires the backend to be running separately (see above) — the dev server does not start it.
+`BACKEND_URL` (default `http://localhost:3000`) controls where the dev-server proxy forwards `/api`
+requests; docker-compose sets it to `http://backend:3000` since the backend isn't on localhost
+inside the frontend's container.
+
+| Command         | Description                                      |
+| ---------------- | ------------------------------------------------- |
+| `npm start`      | `ng serve` with the API proxy                     |
+| `npm run lint`   | ESLint over the Angular app                       |
+| `npm test`       | Unit tests (Vitest, runs headless in Node/jsdom — no Chrome needed) |
+| `npm run build`  | Production build to `dist/frontend`               |
 
 ## Auth quickstart
 
@@ -193,6 +216,55 @@ executing the new request.
   *same* idempotency key produce exactly one journal entry; `N` parallel *distinct* transfers that
   jointly exceed a wallet's balance let exactly the affordable subset through, and the balance
   never goes negative.
+
+## Client Console (frontend)
+
+An Angular 22 standalone-components SPA (`frontend/`), Angular Material for the UI, signals for
+local component state. It talks to the backend exclusively through `/api/v1` — the backend doesn't
+enable CORS, so the dev server proxies `/api` to it (see `frontend/proxy.conf.js`) rather than
+calling it cross-origin.
+
+**Pages**: login/register, a dashboard with one balance card per currency and quick actions
+(deposit, transfer, withdraw), a transactions table (server-side paginated, filterable by
+currency), withdrawals (request + own history with status chips), transfers (send + history,
+sent/received), and an admin area (pending withdrawals with approve/reject, visible only when the
+JWT's role is `admin`).
+
+### Manual walkthrough / capturing screenshots
+
+There's no automated visual regression suite — to see it end to end (and capture screenshots for
+this README), run `docker compose up` (or the two dev servers separately) and, against
+`http://localhost:4200`:
+
+1. Register two users (e.g. `jane@example.com`, `bob@example.com`).
+2. As Jane: **Deposit** some USD from the dashboard quick action.
+3. As Jane: **Transfer** part of it to `bob@example.com` from the Transfer page — note the
+   `Idempotency-Key` request header in your browser's network tab; it's a fresh UUID per attempt,
+   reused only if you force a network error (e.g. throttle to "Offline" mid-request in devtools)
+   and hit the resulting **Retry** button.
+4. As Jane: request a **withdrawal** from the Withdrawals page.
+5. Log in as `admin@flowpay.dev` (password from `SEED_ADMIN_PASSWORD`, default `ChangeMe123!`) —
+   note the "Admin" nav link only appears for this account — and **approve** or **reject** the
+   pending request from Admin → Withdrawals.
+6. Back as Jane, confirm the balance and the Transactions page reflect every step.
+
+### Known simplifications (frontend)
+
+- **JWT + profile in `localStorage`**, not an httpOnly cookie. This is the standard trade-off for a
+  demo SPA: simpler (no CSRF token dance, no same-site cookie/proxy configuration to get right
+  across dev and prod origins), but a JS-executed XSS on this app *could* read the token, which a
+  cookie marked httpOnly would prevent. Acceptable here because the 15-minute `JWT_EXPIRES_IN`
+  (no refresh token — see below) already caps the blast radius; a production version of this app
+  should move to an httpOnly, same-site cookie issued by the backend instead.
+- **"Convert" is a disabled quick action.** The backend's ledger already models an `fx_convert`
+  journal entry type for this, but no FX rate source or `/convert` endpoint exists yet — showing a
+  working button that isn't backed by a real endpoint would be worse than showing it disabled with
+  a tooltip.
+- **The admin withdrawals table can't show *who* requested a withdrawal** — only the destination,
+  amount, and currency. `WithdrawalResponseDto` doesn't expose the requesting user's id or email
+  (by design, to keep that endpoint from leaking user data to a party who didn't ask for it beyond
+  what's needed to decide), so the admin review screen is judged on destination + amount alone.
+  Surfacing the requester would need a backend DTO change, out of scope for a frontend-only task.
 
 ## Known simplifications
 

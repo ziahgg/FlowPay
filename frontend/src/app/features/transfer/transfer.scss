@@ -1,0 +1,58 @@
+.transfer-card {
+  margin-bottom: 2.5rem;
+  max-width: 640px;
+}
+
+.transfer-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-top: 0.5rem;
+
+  mat-form-field {
+    width: 220px;
+  }
+}
+
+.note-field {
+  width: 100% !important;
+}
+
+.network-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mat-sys-error) 10%, transparent);
+  color: var(--mat-sys-error);
+  font-size: 0.875rem;
+}
+
+.submit-button {
+  height: 40px;
+}
+
+.history-header {
+  margin-top: 0;
+}
+
+.transfer-table {
+  width: 100%;
+}
+
+.direction-sent {
+  --mat-chip-label-text-color: var(--mat-sys-on-surface-variant);
+  --mdc-chip-elevated-container-color: color-mix(
+    in srgb,
+    var(--mat-sys-on-surface-variant) 12%,
+    transparent
+  );
+}
+
+.direction-received {
+  --mat-chip-label-text-color: var(--mat-sys-primary);
+  --mdc-chip-elevated-container-color: color-mix(in srgb, var(--mat-sys-primary) 12%, transparent);
+}

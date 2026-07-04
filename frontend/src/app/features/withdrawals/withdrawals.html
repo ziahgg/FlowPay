@@ -1,0 +1,114 @@
+<div class="page-header">
+  <h1>Withdrawals</h1>
+</div>
+
+<mat-card appearance="outlined" class="request-card">
+  <mat-card-header>
+    <mat-card-title>Request a withdrawal</mat-card-title>
+    <mat-card-subtitle>
+      Funds are held immediately and released only after an admin decides.
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <form [formGroup]="form" (ngSubmit)="submit()" class="request-form">
+      <mat-form-field appearance="outline">
+        <mat-label>Currency</mat-label>
+        <mat-select formControlName="currency">
+          @for (balance of balances(); track balance.currency) {
+            <mat-option [value]="balance.currency">{{ balance.currency }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Amount</mat-label>
+        <input matInput formControlName="amount" placeholder="50.00" />
+        @if (form.controls.amount.hasError('required')) {
+          <mat-error>Amount is required.</mat-error>
+        } @else if (form.controls.amount.hasError('pattern')) {
+          <mat-error>Enter a positive number with up to 8 decimal places.</mat-error>
+        }
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="destination-field">
+        <mat-label>Destination</mat-label>
+        <input matInput formControlName="destination" placeholder="Simulated IBAN or address" />
+        @if (form.controls.destination.hasError('required')) {
+          <mat-error>Destination is required.</mat-error>
+        }
+      </mat-form-field>
+
+      <button
+        mat-flat-button
+        color="primary"
+        type="submit"
+        class="submit-button"
+        [disabled]="submitting()"
+      >
+        @if (submitting()) {
+          <mat-progress-spinner diameter="20" mode="indeterminate" />
+        } @else {
+          Request withdrawal
+        }
+      </button>
+    </form>
+  </mat-card-content>
+</mat-card>
+
+<div class="page-header history-header">
+  <h1>History</h1>
+</div>
+
+@if (loading()) {
+  <div class="loading-state">
+    <mat-progress-spinner mode="indeterminate" diameter="40" />
+  </div>
+} @else if (requests().length === 0) {
+  <div class="empty-state">
+    <mat-icon>north_east</mat-icon>
+    <p>No withdrawal requests yet.</p>
+  </div>
+} @else {
+  <table mat-table [dataSource]="requests()" class="withdrawals-table">
+    <ng-container matColumnDef="createdAt">
+      <th mat-header-cell *matHeaderCellDef>Requested</th>
+      <td mat-cell *matCellDef="let request">{{ request.createdAt | date: 'medium' }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="currency">
+      <th mat-header-cell *matHeaderCellDef>Currency</th>
+      <td mat-cell *matCellDef="let request">{{ request.currency }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="amount">
+      <th mat-header-cell *matHeaderCellDef>Amount</th>
+      <td mat-cell *matCellDef="let request">
+        {{ request.amount | currencyAmount: decimalsFor(request.currency) }}
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="destination">
+      <th mat-header-cell *matHeaderCellDef>Destination</th>
+      <td mat-cell *matCellDef="let request">{{ request.destination }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="status">
+      <th mat-header-cell *matHeaderCellDef>Status</th>
+      <td mat-cell *matCellDef="let request">
+        <app-status-chip [status]="request.status" />
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+  </table>
+
+  <mat-paginator
+    [length]="total()"
+    [pageIndex]="pageIndex()"
+    [pageSize]="pageSize()"
+    [pageSizeOptions]="[10, 20, 50]"
+    (page)="onPageChange($event)"
+  />
+}
