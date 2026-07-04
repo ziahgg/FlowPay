@@ -33,6 +33,9 @@ services:
       DB_USERNAME: flowpay
       DB_PASSWORD: flowpay
       DB_NAME: flowpay
+      JWT_SECRET: dev-only-insecure-secret-change-me-please-32chars
+      JWT_EXPIRES_IN: 15m
+      SEED_ADMIN_PASSWORD: ChangeMe123!
     ports:
       - "3000:3000"
     volumes:

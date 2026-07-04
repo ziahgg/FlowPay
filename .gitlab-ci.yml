@@ -34,6 +34,9 @@ test:
     DB_USERNAME: flowpay
     DB_PASSWORD: flowpay
     DB_NAME: flowpay
+    JWT_SECRET: ci-only-insecure-secret-change-me-please-32chars
+    JWT_EXPIRES_IN: 15m
+    SEED_ADMIN_PASSWORD: ChangeMe123!
     POSTGRES_USER: flowpay
     POSTGRES_PASSWORD: flowpay
     POSTGRES_DB: flowpay

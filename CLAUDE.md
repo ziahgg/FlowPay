@@ -88,6 +88,22 @@ backend/src/
      at startup — a missing/invalid env var must fail fast, not silently default in a way that
      hides misconfiguration.
 
+5. **Auth & response shaping**
+   - Passwords are hashed with `argon2` (never stored or logged in plaintext); access tokens are
+     JWTs signed with `JWT_SECRET`, 15 minutes by default (`JWT_EXPIRES_IN`). There is no refresh
+     token — see "Known simplifications" in [README.md](README.md).
+   - Services never return TypeORM entities directly from a controller. Any entity with sensitive
+     columns (e.g. `password_hash`) exposes an explicit mapping method (e.g. `toProfile()`) that
+     returns a plain response DTO — this is the only path a controller may return to the client.
+   - Sensitive/mutating endpoints (auth, and anything similar later) are rate-limited with
+     `@nestjs/throttler`, applied locally via `@UseGuards(ThrottlerGuard)` on the owning controller
+     rather than globally, so unrelated endpoints aren't throttled by default.
+   - `JwtAuthGuard` (route auth) and `RolesGuard` + `@Roles(...)` (authorization) are separate
+     guards, composed as `@UseGuards(JwtAuthGuard, RolesGuard)` on any endpoint that needs both.
+   - One-off idempotent scripts (e.g. dev/admin seeding) live in `src/scripts/`, run via
+     `ts-node src/scripts/<name>.ts` (see `npm run seed`), and reuse the `DataSource` exported from
+     `src/typeorm.config.ts` rather than bootstrapping the full Nest app.
+
 ## Local development
 
 See [README.md](README.md) for the quickstart. In short: `docker compose up` brings up Postgres +

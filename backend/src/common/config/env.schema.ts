@@ -9,6 +9,9 @@ export const envSchema = z.object({
   DB_USERNAME: z.string().min(1).default('flowpay'),
   DB_PASSWORD: z.string().min(1).default('flowpay'),
   DB_NAME: z.string().min(1).default('flowpay'),
+  JWT_SECRET: z.string().min(32).default('dev-only-insecure-secret-change-me-please-32chars'),
+  JWT_EXPIRES_IN: z.string().min(1).default('15m'),
+  SEED_ADMIN_PASSWORD: z.string().min(8).default('ChangeMe123!'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;
