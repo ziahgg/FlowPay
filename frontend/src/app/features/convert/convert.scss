@@ -1,0 +1,55 @@
+.convert-card {
+  margin-bottom: 2.5rem;
+  max-width: 640px;
+}
+
+.convert-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-top: 0.5rem;
+
+  mat-form-field {
+    width: 220px;
+  }
+}
+
+.quote-panel {
+  width: 100%;
+  min-height: 3.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mat-sys-primary) 6%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  justify-content: center;
+}
+
+.quote-headline {
+  margin: 0;
+  font-weight: 600;
+}
+
+.quote-detail {
+  margin: 0;
+  font-size: 0.8125rem;
+  opacity: 0.75;
+}
+
+.network-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mat-sys-error) 10%, transparent);
+  color: var(--mat-sys-error);
+  font-size: 0.875rem;
+}
+
+.submit-button {
+  height: 40px;
+}

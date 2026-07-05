@@ -47,7 +47,7 @@ frontend/src/app/
                  module, functional interceptors (auth, error), functional guards (auth/admin/guest)
   shared/        reusable presentational components (dialogs, cards, chips) and pipes
   features/      one folder per page/route (auth, dashboard, transactions, withdrawals, transfer,
-                 admin), lazy-loaded via `loadComponent` in app.routes.ts
+                 convert, admin), lazy-loaded via `loadComponent` in app.routes.ts
 ```
 
 ## Tech stack
@@ -132,7 +132,8 @@ frontend/src/app/
      There is no per-kind flipping — this is what makes "treasury can go negative" fall out
      naturally (it's the system's mirror image of what users hold) instead of being special-cased.
    - A journal entry must balance to zero **per currency** independently, not just in aggregate —
-     required for future multi-currency entries (FX conversion, etc.) to be caught if malformed.
+     this is what lets FX conversion's 4-line, 2-currency entries be caught if malformed instead of
+     silently passing on a bogus aggregate-only check.
    - `postEntry` locks the `account_balances` rows it touches with `SELECT ... FOR UPDATE`,
      ordered by ascending account id in one statement — Postgres's own documented pattern for
      avoiding deadlocks when transactions lock overlapping sets of rows in different orders.
@@ -149,8 +150,8 @@ frontend/src/app/
      and `postEntry()` opens and owns its own transaction.
 
 7. **Money-moving POST endpoints that a client might retry are idempotent via `IdempotencyService`.**
-   - `common/idempotency/` is reusable infrastructure (used by transfers, intended for FX
-     conversion next) — it is not specific to any one feature module.
+   - `common/idempotency/` is reusable infrastructure (used by transfers and FX conversion) — it is
+     not specific to any one feature module.
    - The controller requires an `Idempotency-Key` header (400 if missing) and the service wraps
      the actual handler in `IdempotencyService.run({ userId, key, endpoint, requestPayload,
      successStatus, handler })`.
@@ -195,7 +196,36 @@ frontend/src/app/
      logical operation, hold it in a plain field (not a signal — it doesn't drive the template),
      reuse it across retries triggered by a network error (`HttpErrorResponse.status === 0`), and
      clear it on success or on any definitive server response (a real 4xx/5xx means the server
-     already decided, so the *next* attempt is a new logical operation and needs a new key).
+     already decided, so the *next* attempt is a new logical operation and needs a new key). The
+     Convert page reuses this exact pattern.
+
+9. **FX rate sourcing and conversion math.**
+   - `RateProvider` (`rates/interfaces/rate-provider.interface.ts`) is a strategy interface —
+     `CoinGeckoRateProvider` (live, public API, no key) and `StaticRateProvider` (hardcoded
+     fallback) — both returning USD-anchored prices (`Map<currencyCode, Decimal>`, USD always `1`).
+     `RatesService` is the only thing that decides which provider's result to trust: it caches a
+     snapshot for `RATE_CACHE_TTL_MS` and, on any live-provider failure, falls back to the static
+     provider and logs a warning rather than failing the request — the app must keep working
+     offline. Never call a `RateProvider` directly from a controller or another module; go through
+     `RatesService`.
+   - USD is the fixed anchor currency; a pair's rate is always `usdPrice(from) / usdPrice(to)`.
+     Fiat currencies that CoinGecko can't price directly against one another (there's no fiat/fiat
+     pair in its API) are bridged through BTC — see "FX conversion quickstart" in
+     [README.md](README.md) for the exact derivation. This is hardcoded to the app's fixed
+     5-currency universe; do not generalize it into an N-currency client without a real reason to.
+   - `FxService`'s quote math (spread via `FX_SPREAD_BPS`, rounding) lives in one private method
+     shared by `GET /fx/quote` and `POST /fx/convert` — never duplicate the calculation between
+     them, or a quote can silently drift from what convert actually executes.
+   - All rounding to a currency's native `decimals` uses `Decimal.ROUND_HALF_EVEN` (banker's
+     rounding), applied via `decimal.js`'s `toDecimalPlaces`/`toFixed` — chosen because it doesn't
+     bias amounts in one direction over many conversions. Use this rounding mode for any future
+     money computation that must truncate to a currency's precision, not `ROUND_HALF_UP`.
+   - `POST /fx/convert` posts one atomic 4-line `LedgerService.postEntry()` call (debit
+     user[from]/credit treasury[from], debit treasury[to]/credit user[to] at the net rate) — the
+     spread is never a separate fee line, it's the implicit difference between what the treasury
+     receives and what it gives up. It reuses `IdempotencyService` exactly like transfers (see
+     convention 7); do not build a second idempotency mechanism for money-moving FX-adjacent
+     features.
 
 ## Local development
 

@@ -15,12 +15,7 @@
     <mat-icon>north_east</mat-icon>
     Withdraw
   </button>
-  <button
-    mat-stroked-button
-    type="button"
-    disabled
-    matTooltip="FX conversion is coming soon"
-  >
+  <button mat-stroked-button type="button" (click)="goToConvert()">
     <mat-icon>currency_exchange</mat-icon>
     Convert
   </button>

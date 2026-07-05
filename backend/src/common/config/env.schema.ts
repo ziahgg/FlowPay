@@ -21,6 +21,8 @@ export const envSchema = z.object({
     .regex(/^\d+(\.\d{1,8})?$/, 'TRANSFER_FEE_FLAT must be a non-negative decimal string')
     .default('0'),
   IDEMPOTENCY_STALE_MS: z.coerce.number().int().positive().default(30_000),
+  FX_SPREAD_BPS: z.coerce.number().int().nonnegative().default(50),
+  RATE_CACHE_TTL_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

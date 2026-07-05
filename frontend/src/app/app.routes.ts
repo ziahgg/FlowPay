@@ -35,6 +35,11 @@ export const routes: Routes = [
     canActivate: [authGuard],
   },
   {
+    path: 'convert',
+    loadComponent: () => import('./features/convert/convert').then((m) => m.Convert),
+    canActivate: [authGuard],
+  },
+  {
     path: 'admin/withdrawals',
     loadComponent: () =>
       import('./features/admin/admin-withdrawals/admin-withdrawals').then(

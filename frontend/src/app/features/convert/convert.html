@@ -1,0 +1,94 @@
+<div class="page-header">
+  <h1>Convert</h1>
+</div>
+
+<mat-card appearance="outlined" class="convert-card">
+  <mat-card-header>
+    <mat-card-title>Convert between currencies</mat-card-title>
+    <mat-card-subtitle>Live rates, refreshed automatically</mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <form [formGroup]="form" (ngSubmit)="onSubmitClick()" class="convert-form">
+      <mat-form-field appearance="outline">
+        <mat-label>From</mat-label>
+        <mat-select formControlName="from">
+          @for (balance of balances(); track balance.currency) {
+            <mat-option [value]="balance.currency">{{ balance.currency }}</mat-option>
+          }
+        </mat-select>
+        @if (balanceFor(form.controls.from.value); as balance) {
+          <mat-hint>
+            Balance: {{ balance | currencyAmount: decimalsFor(form.controls.from.value) }}
+          </mat-hint>
+        }
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>To</mat-label>
+        <mat-select formControlName="to">
+          @for (balance of balances(); track balance.currency) {
+            <mat-option [value]="balance.currency">{{ balance.currency }}</mat-option>
+          }
+        </mat-select>
+        @if (form.controls.from.value === form.controls.to.value) {
+          <mat-error>From and To must be different currencies.</mat-error>
+        }
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Amount</mat-label>
+        <input matInput formControlName="amount" placeholder="100.00" />
+        @if (form.controls.amount.hasError('required')) {
+          <mat-error>Amount is required.</mat-error>
+        } @else if (form.controls.amount.hasError('pattern')) {
+          <mat-error>Enter a positive number with up to 8 decimal places.</mat-error>
+        }
+      </mat-form-field>
+
+      <div class="quote-panel">
+        @if (quoteLoading()) {
+          <mat-progress-spinner diameter="24" mode="indeterminate" />
+        } @else if (quote(); as q) {
+          <p class="quote-headline">
+            {{ q.amount }} {{ q.from }} ≈
+            {{ q.toAmount | currencyAmount: decimalsFor(q.to) }} {{ q.to }}
+          </p>
+          <p class="quote-detail">
+            Rate: 1 {{ q.from }} = {{ q.netRate }} {{ q.to }}
+            (spread {{ q.spreadBps / 100 }}%, source: {{ q.source }})
+          </p>
+          <p class="quote-detail">Quote refreshes automatically before it expires.</p>
+        } @else {
+          <p class="quote-detail">Enter an amount to see a live quote.</p>
+        }
+      </div>
+
+      @if (networkError()) {
+        <div class="network-error-banner">
+          <mat-icon>wifi_off</mat-icon>
+          <span>
+            Network error — we don't know if your request reached the server. Retrying is safe:
+            it reuses the same request id, so the conversion will never be applied twice.
+          </span>
+        </div>
+      }
+
+      <button
+        mat-flat-button
+        color="primary"
+        type="submit"
+        class="submit-button"
+        [disabled]="submitting() || !quote()"
+      >
+        @if (submitting()) {
+          <mat-progress-spinner diameter="20" mode="indeterminate" />
+        } @else if (networkError()) {
+          Retry
+        } @else {
+          Convert
+        }
+      </button>
+    </form>
+  </mat-card-content>
+</mat-card>

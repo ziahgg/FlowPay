@@ -4,7 +4,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatTooltipModule } from '@angular/material/tooltip';
 import { AccountBalance } from '../../core/models/account.model';
 import { AccountsService } from '../../core/services/accounts.service';
 import { ToastService } from '../../core/services/toast.service';
@@ -13,13 +12,7 @@ import { DepositDialog } from '../../shared/components/deposit-dialog/deposit-di
 
 @Component({
   selector: 'app-dashboard',
-  imports: [
-    MatButtonModule,
-    MatIconModule,
-    MatProgressSpinnerModule,
-    MatTooltipModule,
-    BalanceCard,
-  ],
+  imports: [MatButtonModule, MatIconModule, MatProgressSpinnerModule, BalanceCard],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })
@@ -55,6 +48,10 @@ export class Dashboard {
 
   protected goToWithdrawals(): void {
     void this.router.navigate(['/withdrawals']);
+  }
+
+  protected goToConvert(): void {
+    void this.router.navigate(['/convert']);
   }
 
   private loadBalances(): void {

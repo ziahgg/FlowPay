@@ -190,7 +190,8 @@ executing the new request.
   key sees the row and either gets `409` (still `processing`) or the cached `{statusCode, body}`
   once it's `completed`.
   - This module is written as reusable infrastructure (`common/idempotency/`), not something
-    transfer-specific — FX conversion will use the same `IdempotencyService.run()` later.
+    transfer-specific — `POST /fx/convert` calls the same `IdempotencyService.run()` (see "FX
+    conversion quickstart" below).
 - **What gets cached.** Every *completed* outcome is cached and replayed byte-identical on a
   retry — including a deterministic rejection like insufficient funds (`422`) or an unknown
   recipient (`404`). This matches how idempotency keys behave in the systems it's modeled on
@@ -217,6 +218,72 @@ executing the new request.
   jointly exceed a wallet's balance let exactly the affordable subset through, and the balance
   never goes negative.
 
+## FX conversion quickstart
+
+Simulated currency conversion (fiat ↔ crypto, fiat ↔ fiat, crypto ↔ crypto) at live rates, with the
+same `Idempotency-Key` guarantees as transfers.
+
+```bash
+# current rate matrix -- public market data, no auth required
+curl http://localhost:3000/api/v1/fx/rates
+# => { "base":"USD","asOf":"...","source":"coingecko","prices":{"USD":"1","BTC":"65000",...},"matrix":{...} }
+
+# a live quote -- no auth, no persistence; valid for the current rate-cache window
+curl "http://localhost:3000/api/v1/fx/quote?from=USD&to=BTC&amount=100"
+# => {"from":"USD","to":"BTC","amount":"100.00","rate":"...","spreadBps":50,"netRate":"...","toAmount":"...","quoteExpiresAt":"..."}
+
+# execute the conversion -- Idempotency-Key required, exactly like transfers
+curl -X POST http://localhost:3000/api/v1/fx/convert \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <accessToken>" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"from":"USD","to":"BTC","amount":"100.00"}'
+# => {"entryId":"...","from":"USD","to":"BTC","amount":"100.00","toAmount":"...","rate":"...",
+#     "netRate":"...","spreadBps":50,"fromBalance":"...","toBalance":"..."}
+```
+
+### Design decisions
+
+- **Rate source & resilience.** `RateProvider` is a small strategy interface with two
+  implementations: `CoinGeckoRateProvider` (the public `simple/price` endpoint, no API key) and
+  `StaticRateProvider` (a hardcoded fallback snapshot). `RatesService` caches USD-anchored prices
+  for `RATE_CACHE_TTL_MS` (default 30s); on cache expiry it tries the live provider first and, on
+  **any** failure (network, timeout, malformed response), falls back to the static provider and
+  logs a warning instead of failing the request. This is deliberate: the app must keep working with
+  no network access at all, at the cost of (clearly labeled, via the response `source` field) stale
+  rates.
+- **USD is the anchor currency; fiat cross-rates are bridged through BTC.** CoinGecko prices actual
+  coins against a `vs_currency`, not fiat-to-fiat pairs, so there's no direct EUR/USD or IDR/USD
+  rate to request. One call (`ids=bitcoin,ethereum&vs_currencies=usd,eur,idr`) is enough:
+  `usdPrice(BTC)` and `usdPrice(ETH)` come directly from the `usd` field, and
+  `usdPrice(EUR) = usdPrice(BTC) / (BTC priced in EUR)` — standard triangulation through a common
+  asset. Any pair's rate is then just `usdPrice(from) / usdPrice(to)`. This is hardcoded to the
+  app's fixed 5-currency universe rather than built as an N-currency generic client, since there's
+  no other currency in the system to generalize for.
+- **Spread**: `FX_SPREAD_BPS` (default 50 = 0.5%) is applied once, as `netRate = rawRate * (1 -
+  spreadBps / 10000)`. `GET /fx/quote` and `POST /fx/convert` share one internal calculation method
+  so a quote is guaranteed to match what convert actually does (modulo rate drift if the cache
+  refreshes between the two calls).
+- **Rounding: half-even (banker's rounding), to the target currency's own `decimals`.** Chosen
+  because it doesn't systematically bias amounts up or down across many conversions the way
+  round-half-up would — appropriate for a platform computing its own margin off the same rounding.
+  Applied via `decimal.js`'s `Decimal.ROUND_HALF_EVEN` everywhere an amount is truncated to a
+  currency's native precision (both the `from` amount and the computed `to` amount).
+- **Ledger posting: the spread stays implicit in the treasury's position, not a separate fee
+  line.** `POST /fx/convert` posts one atomic 4-line `fx_convert` entry: debit user[from] / credit
+  treasury[from] at the user's original amount, then debit treasury[to] / credit user[to] at the
+  **net** (spread-reduced) amount. Each currency balances independently, as required by the
+  ledger's own per-currency invariant. Averaged over many conversions in both directions, the
+  treasury structurally receives slightly more value than it gives up — that gap **is** the
+  platform's margin, with no separate `fees` account entry needed. (An explicit `fees[from]` line
+  was considered and is equally valid against the ledger's invariants; implicit was chosen only for
+  simplicity.)
+- **`/fx/convert` reuses `IdempotencyService` unchanged** — no refactor was needed, since it was
+  already generic (`userId`/`key`/`endpoint`/`requestPayload`/`successStatus`/`handler`) and was
+  designed for exactly this reuse (see "Payments: idempotency & concurrency" above).
+- **`GET /fx/rates` and `GET /fx/quote` don't require authentication** — they're public market data
+  with no user-specific information, matching how a real exchange exposes rates/quotes publicly
+  while gating the actual trade behind auth.
+
 ## Client Console (frontend)
 
 An Angular 22 standalone-components SPA (`frontend/`), Angular Material for the UI, signals for
@@ -225,10 +292,11 @@ enable CORS, so the dev server proxies `/api` to it (see `frontend/proxy.conf.js
 calling it cross-origin.
 
 **Pages**: login/register, a dashboard with one balance card per currency and quick actions
-(deposit, transfer, withdraw), a transactions table (server-side paginated, filterable by
+(deposit, transfer, withdraw, convert), a transactions table (server-side paginated, filterable by
 currency), withdrawals (request + own history with status chips), transfers (send + history,
-sent/received), and an admin area (pending withdrawals with approve/reject, visible only when the
-JWT's role is `admin`).
+sent/received), convert (live quote refreshed automatically, confirm dialog showing the rate and
+spread before submitting), and an admin area (pending withdrawals with approve/reject, visible only
+when the JWT's role is `admin`).
 
 ### Manual walkthrough / capturing screenshots
 
@@ -243,10 +311,13 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
    reused only if you force a network error (e.g. throttle to "Offline" mid-request in devtools)
    and hit the resulting **Retry** button.
 4. As Jane: request a **withdrawal** from the Withdrawals page.
-5. Log in as `admin@flowpay.dev` (password from `SEED_ADMIN_PASSWORD`, default `ChangeMe123!`) —
+5. As Jane: **Convert** some USD to BTC from the Convert page — watch the quote update live as you
+   change the amount, confirm the dialog shows the rate and spread, and check the dashboard balance
+   updates for both currencies afterward.
+6. Log in as `admin@flowpay.dev` (password from `SEED_ADMIN_PASSWORD`, default `ChangeMe123!`) —
    note the "Admin" nav link only appears for this account — and **approve** or **reject** the
    pending request from Admin → Withdrawals.
-6. Back as Jane, confirm the balance and the Transactions page reflect every step.
+7. Back as Jane, confirm the balance and the Transactions page reflect every step.
 
 ### Known simplifications (frontend)
 
@@ -256,10 +327,6 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
   cookie marked httpOnly would prevent. Acceptable here because the 15-minute `JWT_EXPIRES_IN`
   (no refresh token — see below) already caps the blast radius; a production version of this app
   should move to an httpOnly, same-site cookie issued by the backend instead.
-- **"Convert" is a disabled quick action.** The backend's ledger already models an `fx_convert`
-  journal entry type for this, but no FX rate source or `/convert` endpoint exists yet — showing a
-  working button that isn't backed by a real endpoint would be worse than showing it disabled with
-  a tooltip.
 - **The admin withdrawals table can't show *who* requested a withdrawal** — only the destination,
   amount, and currency. `WithdrawalResponseDto` doesn't expose the requesting user's id or email
   (by design, to keep that endpoint from leaking user data to a party who didn't ask for it beyond
