@@ -16,6 +16,6 @@ export class DepositsController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateDepositDto,
   ): Promise<DepositResponseDto> {
-    return this.depositsService.deposit(user.id, dto.currency, dto.amount);
+    return this.depositsService.deposit(user.id, user.email, dto.currency, dto.amount);
   }
 }

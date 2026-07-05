@@ -2,10 +2,13 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
 import { JournalLineDirection } from '../ledger/entities/journal-line-direction.enum';
 import { LedgerService } from '../ledger/ledger.service';
+import { UsersService } from '../users/users.service';
 import { WithdrawalRequest } from './entities/withdrawal-request.entity';
 import { WithdrawalRequestStatus } from './entities/withdrawal-request-status.enum';
 import { WithdrawalResponseDto } from './dto/withdrawal-response.dto';
@@ -14,6 +17,8 @@ import { WithdrawalResponseDto } from './dto/withdrawal-response.dto';
 export class WithdrawalsService {
   constructor(
     private readonly ledgerService: LedgerService,
+    private readonly usersService: UsersService,
+    private readonly outboxService: OutboxService,
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(WithdrawalRequest)
     private readonly withdrawalRequestRepository: Repository<WithdrawalRequest>,
@@ -125,7 +130,24 @@ export class WithdrawalsService {
       request.decidedAt = new Date();
       request.settleEntryId = result.entryId;
 
-      return manager.save(request);
+      const saved = await manager.save(request);
+
+      const requester = await this.usersService.findById(request.userId);
+      await this.outboxService.append(
+        {
+          eventType: DomainEventType.WITHDRAWAL_APPROVED,
+          aggregateId: result.entryId,
+          payload: {
+            recipientEmail: requester?.email ?? null,
+            currency: request.currencyCode,
+            amount: request.amount,
+            destination: request.destination,
+          },
+        },
+        manager,
+      );
+
+      return saved;
     });
 
     return this.toDto(updated);
@@ -176,7 +198,24 @@ export class WithdrawalsService {
       request.decidedAt = new Date();
       request.settleEntryId = result.entryId;
 
-      return manager.save(request);
+      const saved = await manager.save(request);
+
+      const requester = await this.usersService.findById(request.userId);
+      await this.outboxService.append(
+        {
+          eventType: DomainEventType.WITHDRAWAL_REJECTED,
+          aggregateId: result.entryId,
+          payload: {
+            recipientEmail: requester?.email ?? null,
+            currency: request.currencyCode,
+            amount: request.amount,
+            destination: request.destination,
+          },
+        },
+        manager,
+      );
+
+      return saved;
     });
 
     return this.toDto(updated);

@@ -2,6 +2,8 @@ import { ConfigService } from '@nestjs/config';
 import Decimal from 'decimal.js';
 import { PinoLogger } from 'nestjs-pino';
 import { EnvConfig } from '../common/config/env.schema';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { CurrencyType } from '../ledger/entities/currency-type.enum';
@@ -11,6 +13,7 @@ import { RateProvider } from '../rates/interfaces/rate-provider.interface';
 import { CoinGeckoRateProvider } from '../rates/providers/coingecko-rate.provider';
 import { StaticRateProvider } from '../rates/providers/static-rate.provider';
 import { RatesService } from '../rates/rates.service';
+import { UsersService } from '../users/users.service';
 import { Order } from './entities/order.entity';
 import { OrderSide } from './entities/order-side.enum';
 import { OrderStatus } from './entities/order-status.enum';
@@ -57,6 +60,8 @@ function buildRatesService(btcUsdPrice: number): RatesService {
 describe('OrdersWorkerService', () => {
   let ledgerService: jest.Mocked<Pick<LedgerService, 'getCurrency'>>;
   let tradeExecutionService: jest.Mocked<Pick<TradeExecutionService, 'executeSwap'>>;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let outboxService: jest.Mocked<Pick<OutboxService, 'append'>>;
   let dataSource: { transaction: jest.Mock };
   let orderRepository: { find: jest.Mock };
   let logger: { setContext: jest.Mock; error: jest.Mock };
@@ -91,6 +96,8 @@ describe('OrdersWorkerService', () => {
       ledgerService as unknown as LedgerService,
       ratesService,
       tradeExecutionService as unknown as TradeExecutionService,
+      usersService as unknown as UsersService,
+      outboxService,
       dataSource as never,
       orderRepository as never,
       logger as unknown as PinoLogger,
@@ -110,6 +117,10 @@ describe('OrdersWorkerService', () => {
         toBalance: '0.01000000',
       }),
     };
+    usersService = {
+      findById: jest.fn().mockResolvedValue({ id: 'user-1', email: 'jane@example.com' }),
+    };
+    outboxService = { append: jest.fn().mockResolvedValue(undefined) };
     dataSource = { transaction: jest.fn() };
     orderRepository = { find: jest.fn() };
     logger = { setContext: jest.fn(), error: jest.fn() };
@@ -188,6 +199,21 @@ describe('OrdersWorkerService', () => {
     expect(order.fillEntryId).toBe('fill-entry-1');
     expect(order.filledPrice).toBe('50000.00');
     expect(order.filledAt).toBeInstanceOf(Date);
+
+    expect(outboxService.append).toHaveBeenCalledWith(
+      {
+        eventType: DomainEventType.ORDER_FILLED,
+        aggregateId: order.id,
+        payload: {
+          recipientEmail: 'jane@example.com',
+          pair: 'BTC/USD',
+          side: OrderSide.BUY,
+          quantity: '0.01000000',
+          filledPrice: '50000.00',
+        },
+      },
+      expect.anything(),
+    );
   });
 
   it('is a safe no-op when the order is no longer open (already resolved by a cancel or a prior fill)', async () => {
@@ -230,6 +256,8 @@ describe('OrdersWorkerService', () => {
         ledgerService as unknown as LedgerService,
         ratesService,
         tradeExecutionService as unknown as TradeExecutionService,
+        usersService as unknown as UsersService,
+        outboxService,
         dataSource as never,
         orderRepository as never,
         logger as unknown as PinoLogger,

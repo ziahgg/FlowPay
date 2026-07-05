@@ -5,11 +5,15 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectDataSource } from '@nestjs/typeorm';
 import Decimal from 'decimal.js';
+import { DataSource } from 'typeorm';
 import { EnvConfig } from '../common/config/env.schema';
 import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { RunIdempotentResult } from '../common/idempotency/interfaces/run-idempotent.interface';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
 import { JournalLineDirection } from '../ledger/entities/journal-line-direction.enum';
@@ -28,7 +32,9 @@ export class TransfersService {
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly outboxService: OutboxService,
     private readonly configService: ConfigService<EnvConfig, true>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   async create(
@@ -114,17 +120,43 @@ export class TransfersService {
       });
     }
 
-    const result = await this.ledgerService.postEntry({
-      type: JournalEntryType.TRANSFER,
-      description: dto.note ?? `Transfer of ${dto.amount} ${currency.code} to ${recipient.email}`,
-      metadata: {
-        senderId,
-        senderEmail: sender?.email ?? null,
-        recipientId: recipient.id,
-        recipientEmail: recipient.email,
-        note: dto.note ?? null,
-      },
-      lines,
+    // The outbox row is appended in the SAME transaction as the ledger entry -- see
+    // common/outbox/outbox.service.ts and README "Event-driven architecture" for why that
+    // atomicity is the entire point of the pattern.
+    const result = await this.dataSource.transaction(async (manager) => {
+      const postResult = await this.ledgerService.postEntry(
+        {
+          type: JournalEntryType.TRANSFER,
+          description:
+            dto.note ?? `Transfer of ${dto.amount} ${currency.code} to ${recipient.email}`,
+          metadata: {
+            senderId,
+            senderEmail: sender?.email ?? null,
+            recipientId: recipient.id,
+            recipientEmail: recipient.email,
+            note: dto.note ?? null,
+          },
+          lines,
+        },
+        manager,
+      );
+
+      await this.outboxService.append(
+        {
+          eventType: DomainEventType.TRANSFER_COMPLETED,
+          aggregateId: postResult.entryId,
+          payload: {
+            recipientEmail: recipient.email,
+            senderEmail: sender?.email ?? null,
+            currency: currency.code,
+            amount: dto.amount,
+            note: dto.note ?? null,
+          },
+        },
+        manager,
+      );
+
+      return postResult;
     });
 
     const body: TransferResponseDto = {

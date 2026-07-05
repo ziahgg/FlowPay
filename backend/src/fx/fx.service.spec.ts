@@ -4,12 +4,15 @@ import Decimal from 'decimal.js';
 import { EnvConfig } from '../common/config/env.schema';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { RunIdempotentParams } from '../common/idempotency/interfaces/run-idempotent.interface';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { CurrencyType } from '../ledger/entities/currency-type.enum';
 import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
 import { LedgerService } from '../ledger/ledger.service';
 import { RatesService } from '../rates/rates.service';
+import { UsersService } from '../users/users.service';
 import { FxService } from './fx.service';
 
 const CURRENCIES: Record<
@@ -26,8 +29,11 @@ describe('FxService', () => {
   let ledgerService: jest.Mocked<Pick<LedgerService, 'getCurrency' | 'listCurrencies'>>;
   let ratesService: jest.Mocked<Pick<RatesService, 'getRate' | 'getSnapshot' | 'getCacheTtlMs'>>;
   let tradeExecutionService: jest.Mocked<Pick<TradeExecutionService, 'executeSwap'>>;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let outboxService: jest.Mocked<Pick<OutboxService, 'append'>>;
   let idempotencyService: { run: jest.Mock };
   let configService: { get: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
 
   const userId = 'user-1';
 
@@ -60,6 +66,12 @@ describe('FxService', () => {
       }),
     };
 
+    usersService = {
+      findById: jest.fn().mockResolvedValue({ id: userId, email: 'jane@example.com' }),
+    };
+    outboxService = { append: jest.fn().mockResolvedValue(undefined) };
+    dataSource = { transaction: jest.fn((cb: (manager: unknown) => unknown) => cb({})) };
+
     configService = { get: jest.fn().mockReturnValue(50) };
 
     service = new FxService(
@@ -67,7 +79,10 @@ describe('FxService', () => {
       ratesService as unknown as RatesService,
       idempotencyService as unknown as IdempotencyService,
       tradeExecutionService as unknown as TradeExecutionService,
+      usersService as unknown as UsersService,
+      outboxService,
       configService as unknown as ConfigService<EnvConfig, true>,
+      dataSource as never,
     );
   });
 
@@ -179,6 +194,7 @@ describe('FxService', () => {
           toAmount: '0.00199000',
           entryType: JournalEntryType.FX_CONVERT,
         }),
+        expect.anything(),
       );
 
       expect(result.body).toEqual({
@@ -193,6 +209,22 @@ describe('FxService', () => {
         fromBalance: '900.00',
         toBalance: '0.00199000',
       });
+
+      expect(outboxService.append).toHaveBeenCalledWith(
+        {
+          eventType: DomainEventType.FX_CONVERTED,
+          aggregateId: 'entry-1',
+          payload: {
+            recipientEmail: 'jane@example.com',
+            from: 'USD',
+            to: 'BTC',
+            amount: '100.00',
+            toAmount: '0.00199000',
+            rate: '0.00002',
+          },
+        },
+        expect.anything(),
+      );
     });
 
     it('rejects converting a currency to itself before touching the ledger', async () => {

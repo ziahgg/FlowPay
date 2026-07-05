@@ -8,6 +8,7 @@ import { DepositsModule } from './deposits/deposits.module';
 import { FxModule } from './fx/fx.module';
 import { HealthModule } from './health/health.module';
 import { LedgerModule } from './ledger/ledger.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { RatesModule } from './rates/rates.module';
 import { TradingModule } from './trading/trading.module';
 import { TransfersModule } from './transfers/transfers.module';
@@ -30,6 +31,7 @@ import { WithdrawalsModule } from './withdrawals/withdrawals.module';
     RatesModule,
     FxModule,
     TradingModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}

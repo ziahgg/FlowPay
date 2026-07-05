@@ -1,5 +1,7 @@
 import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import Decimal from 'decimal.js';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { CurrencyType } from '../ledger/entities/currency-type.enum';
@@ -8,6 +10,7 @@ import { JournalLineDirection } from '../ledger/entities/journal-line-direction.
 import { EnsureAccountInput } from '../ledger/interfaces/ensure-account.interface';
 import { LedgerService } from '../ledger/ledger.service';
 import { RatesService } from '../rates/rates.service';
+import { UsersService } from '../users/users.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { Order } from './entities/order.entity';
 import { OrderSide } from './entities/order-side.enum';
@@ -30,6 +33,8 @@ describe('OrdersService', () => {
   >;
   let ratesService: jest.Mocked<Pick<RatesService, 'getRate'>>;
   let tradeExecutionService: jest.Mocked<Pick<TradeExecutionService, 'executeSwap'>>;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let outboxService: jest.Mocked<Pick<OutboxService, 'append'>>;
   let dataSource: { transaction: jest.Mock };
   let orderRepository: { create: jest.Mock; save: jest.Mock; findAndCount: jest.Mock };
 
@@ -89,7 +94,17 @@ describe('OrdersService', () => {
       }),
     };
 
+    usersService = {
+      findById: jest.fn().mockResolvedValue({ id: userId, email: 'jane@example.com' }),
+    };
+    outboxService = { append: jest.fn().mockResolvedValue(undefined) };
+
     dataSource = { transaction: jest.fn() };
+    // Default: no pre-existing row (fine for market-order creation, which only ever inserts).
+    // Tests needing a specific existing row (limit placement/cancel) override this per-test.
+    dataSource.transaction.mockImplementation((cb: (m: unknown) => unknown) =>
+      cb(fakeManager(null)),
+    );
     orderRepository = {
       create: jest.fn((data: Partial<Order>) => data),
       save: jest.fn((data: Partial<Order>) => Promise.resolve({ id: 'order-1', ...data })),
@@ -100,6 +115,8 @@ describe('OrdersService', () => {
       ledgerService as unknown as LedgerService,
       ratesService as unknown as RatesService,
       tradeExecutionService as unknown as TradeExecutionService,
+      usersService as unknown as UsersService,
+      outboxService,
       dataSource as never,
       orderRepository as never,
     );
@@ -131,11 +148,27 @@ describe('OrdersService', () => {
           toAmount: '0.01000000',
           entryType: JournalEntryType.TRADE,
         }),
+        expect.anything(),
       );
       expect(result.status).toBe(OrderStatus.FILLED);
       expect(result.filledPrice).toBe('50000.00');
       expect(result.fillEntryId).toBe('fill-entry-1');
       expect(result.holdEntryId).toBeNull();
+
+      expect(outboxService.append).toHaveBeenCalledWith(
+        {
+          eventType: DomainEventType.ORDER_FILLED,
+          aggregateId: result.id,
+          payload: {
+            recipientEmail: 'jane@example.com',
+            pair: 'BTC/USD',
+            side: OrderSide.BUY,
+            quantity: '0.01000000',
+            filledPrice: '50000.00',
+          },
+        },
+        expect.anything(),
+      );
     });
 
     it('sells base for quote at the current rate', async () => {
@@ -155,6 +188,7 @@ describe('OrdersService', () => {
           toCurrencyCode: 'USD',
           toAmount: '500.00',
         }),
+        expect.anything(),
       );
     });
 
@@ -170,6 +204,7 @@ describe('OrdersService', () => {
       // 1 * 2.125 = 2.125, exactly at the rounding midpoint -- half-even keeps the even digit.
       expect(tradeExecutionService.executeSwap).toHaveBeenCalledWith(
         expect.objectContaining({ fromAmount: '2.12' }),
+        expect.anything(),
       );
     });
 

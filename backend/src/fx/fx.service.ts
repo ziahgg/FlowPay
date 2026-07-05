@@ -1,15 +1,20 @@
 import { HttpStatus, Injectable, UnprocessableEntityException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectDataSource } from '@nestjs/typeorm';
 import Decimal from 'decimal.js';
+import { DataSource } from 'typeorm';
 import { EnvConfig } from '../common/config/env.schema';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { RunIdempotentResult } from '../common/idempotency/interfaces/run-idempotent.interface';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { Currency } from '../ledger/entities/currency.entity';
 import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
 import { LedgerService } from '../ledger/ledger.service';
 import { RatesService } from '../rates/rates.service';
+import { UsersService } from '../users/users.service';
 import { ConvertDto } from './dto/convert.dto';
 import { ConvertResponseDto } from './dto/convert-response.dto';
 import { QuoteQueryDto } from './dto/quote-query.dto';
@@ -37,7 +42,10 @@ export class FxService {
     private readonly ratesService: RatesService,
     private readonly idempotencyService: IdempotencyService,
     private readonly tradeExecutionService: TradeExecutionService,
+    private readonly usersService: UsersService,
+    private readonly outboxService: OutboxService,
     private readonly configService: ConfigService<EnvConfig, true>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   async getRatesMatrix(): Promise<RatesResponseDto> {
@@ -121,24 +129,48 @@ export class FxService {
     const { fromCurrency, toCurrency, fromAmount, toAmount, rate, netRate, spreadBps, source } =
       computation;
 
-    const result = await this.tradeExecutionService.executeSwap({
-      source: {
-        ownerUserId: userId,
-        currencyCode: fromCurrency.code,
-        kind: AccountKind.USER_WALLET,
-      },
-      fromAmount,
-      toUserId: userId,
-      toCurrencyCode: toCurrency.code,
-      toAmount,
-      entryType: JournalEntryType.FX_CONVERT,
-      description: `Converted ${fromAmount} ${fromCurrency.code} to ${toAmount} ${toCurrency.code}`,
-      metadata: {
-        rate: rate.toString(),
-        netRate: netRate.toString(),
-        spreadBps,
-        rateSource: source,
-      },
+    const result = await this.dataSource.transaction(async (manager) => {
+      const swapResult = await this.tradeExecutionService.executeSwap(
+        {
+          source: {
+            ownerUserId: userId,
+            currencyCode: fromCurrency.code,
+            kind: AccountKind.USER_WALLET,
+          },
+          fromAmount,
+          toUserId: userId,
+          toCurrencyCode: toCurrency.code,
+          toAmount,
+          entryType: JournalEntryType.FX_CONVERT,
+          description: `Converted ${fromAmount} ${fromCurrency.code} to ${toAmount} ${toCurrency.code}`,
+          metadata: {
+            rate: rate.toString(),
+            netRate: netRate.toString(),
+            spreadBps,
+            rateSource: source,
+          },
+        },
+        manager,
+      );
+
+      const user = await this.usersService.findById(userId);
+      await this.outboxService.append(
+        {
+          eventType: DomainEventType.FX_CONVERTED,
+          aggregateId: swapResult.entryId,
+          payload: {
+            recipientEmail: user?.email ?? null,
+            from: fromCurrency.code,
+            to: toCurrency.code,
+            amount: fromAmount,
+            toAmount,
+            rate: rate.toString(),
+          },
+        },
+        manager,
+      );
+
+      return swapResult;
     });
 
     const body: ConvertResponseDto = {

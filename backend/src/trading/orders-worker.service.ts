@@ -4,11 +4,14 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import Decimal from 'decimal.js';
 import { PinoLogger } from 'nestjs-pino';
 import { DataSource, Repository } from 'typeorm';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
 import { LedgerService } from '../ledger/ledger.service';
 import { RatesService } from '../rates/rates.service';
+import { UsersService } from '../users/users.service';
 import { Order } from './entities/order.entity';
 import { OrderSide } from './entities/order-side.enum';
 import { OrderStatus } from './entities/order-status.enum';
@@ -28,6 +31,8 @@ export class OrdersWorkerService {
     private readonly ledgerService: LedgerService,
     private readonly ratesService: RatesService,
     private readonly tradeExecutionService: TradeExecutionService,
+    private readonly usersService: UsersService,
+    private readonly outboxService: OutboxService,
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(Order) private readonly orderRepository: Repository<Order>,
     private readonly logger: PinoLogger,
@@ -123,6 +128,22 @@ export class OrdersWorkerService {
       order.filledPrice = limitPrice.toFixed(quote.decimals);
       order.filledAt = new Date();
       await manager.save(order);
+
+      const user = await this.usersService.findById(order.userId);
+      await this.outboxService.append(
+        {
+          eventType: DomainEventType.ORDER_FILLED,
+          aggregateId: order.id,
+          payload: {
+            recipientEmail: user?.email ?? null,
+            pair: order.pair,
+            side: order.side,
+            quantity: order.quantity,
+            filledPrice: order.filledPrice,
+          },
+        },
+        manager,
+      );
 
       return true;
     });

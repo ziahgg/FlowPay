@@ -1,8 +1,11 @@
 import { NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { getDataSourceToken } from '@nestjs/typeorm';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { RunIdempotentParams } from '../common/idempotency/interfaces/run-idempotent.interface';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { CurrencyType } from '../ledger/entities/currency-type.enum';
 import { JournalLineDirection } from '../ledger/entities/journal-line-direction.enum';
@@ -21,6 +24,8 @@ describe('TransfersService', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findById' | 'findByEmail'>>;
   let idempotencyService: { run: jest.Mock };
   let configService: { get: jest.Mock };
+  let outboxService: jest.Mocked<Pick<OutboxService, 'append'>>;
+  let dataSource: { transaction: jest.Mock };
 
   const sender = {
     id: 'sender-1',
@@ -77,6 +82,8 @@ describe('TransfersService', () => {
       }),
     };
     configService = { get: jest.fn().mockReturnValue('0') };
+    outboxService = { append: jest.fn().mockResolvedValue(undefined) };
+    dataSource = { transaction: jest.fn((cb: (manager: unknown) => unknown) => cb({})) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -84,7 +91,9 @@ describe('TransfersService', () => {
         { provide: LedgerService, useValue: ledgerService },
         { provide: UsersService, useValue: usersService },
         { provide: IdempotencyService, useValue: idempotencyService },
+        { provide: OutboxService, useValue: outboxService },
         { provide: ConfigService, useValue: configService },
+        { provide: getDataSourceToken(), useValue: dataSource },
       ],
     }).compile();
 
@@ -129,6 +138,21 @@ describe('TransfersService', () => {
       amount: '10.00',
       balance: '90.00000000',
     });
+
+    expect(outboxService.append).toHaveBeenCalledWith(
+      {
+        eventType: DomainEventType.TRANSFER_COMPLETED,
+        aggregateId: 'entry-1',
+        payload: {
+          recipientEmail: recipient.email,
+          senderEmail: sender.email,
+          currency: 'USD',
+          amount: '10.00',
+          note: null,
+        },
+      },
+      expect.anything(),
+    );
   });
 
   it('adds a third fee line and debits the sender for amount + fee when a flat fee is configured', async () => {

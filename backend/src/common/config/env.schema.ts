@@ -23,6 +23,12 @@ export const envSchema = z.object({
   IDEMPOTENCY_STALE_MS: z.coerce.number().int().positive().default(30_000),
   FX_SPREAD_BPS: z.coerce.number().int().nonnegative().default(50),
   RATE_CACHE_TTL_MS: z.coerce.number().int().positive().default(30_000),
+  KAFKA_BROKERS: z.string().min(1).default('localhost:9092'),
+  KAFKA_CLIENT_ID: z.string().min(1).default('flowpay-backend'),
+  NOTIFICATIONS_CONSUMER_GROUP_ID: z.string().min(1).default('flowpay-notifications'),
+  SMTP_HOST: z.string().min(1).default('localhost'),
+  SMTP_PORT: z.coerce.number().int().positive().default(1025),
+  MAIL_FROM: z.string().email().default('no-reply@flowpay.dev'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

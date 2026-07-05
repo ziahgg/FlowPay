@@ -8,6 +8,8 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import Decimal from 'decimal.js';
 import { DataSource, Repository } from 'typeorm';
 import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { Currency } from '../ledger/entities/currency.entity';
@@ -15,6 +17,7 @@ import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
 import { JournalLineDirection } from '../ledger/entities/journal-line-direction.enum';
 import { LedgerService } from '../ledger/ledger.service';
 import { RatesService } from '../rates/rates.service';
+import { UsersService } from '../users/users.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
 import { Order } from './entities/order.entity';
@@ -30,6 +33,8 @@ export class OrdersService {
     private readonly ledgerService: LedgerService,
     private readonly ratesService: RatesService,
     private readonly tradeExecutionService: TradeExecutionService,
+    private readonly usersService: UsersService,
+    private readonly outboxService: OutboxService,
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(Order) private readonly orderRepository: Repository<Order>,
   ) {}
@@ -67,35 +72,59 @@ export class OrdersService {
     const quoteAmountFixed = quoteAmount.toFixed(quote.decimals);
     const pair = `${base.code}/${quote.code}`;
 
-    const swapResult = await this.tradeExecutionService.executeSwap({
-      source: {
-        ownerUserId: userId,
-        currencyCode: isBuy ? quote.code : base.code,
-        kind: AccountKind.USER_WALLET,
-      },
-      fromAmount: isBuy ? quoteAmountFixed : quantityFixed,
-      toUserId: userId,
-      toCurrencyCode: isBuy ? base.code : quote.code,
-      toAmount: isBuy ? quantityFixed : quoteAmountFixed,
-      entryType: JournalEntryType.TRADE,
-      description: `Market ${dto.side} of ${quantityFixed} ${base.code} at ${rate.toString()} ${quote.code}`,
-      metadata: { pair, side: dto.side, type: dto.type, price: rate.toString() },
-    });
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const swapResult = await this.tradeExecutionService.executeSwap(
+        {
+          source: {
+            ownerUserId: userId,
+            currencyCode: isBuy ? quote.code : base.code,
+            kind: AccountKind.USER_WALLET,
+          },
+          fromAmount: isBuy ? quoteAmountFixed : quantityFixed,
+          toUserId: userId,
+          toCurrencyCode: isBuy ? base.code : quote.code,
+          toAmount: isBuy ? quantityFixed : quoteAmountFixed,
+          entryType: JournalEntryType.TRADE,
+          description: `Market ${dto.side} of ${quantityFixed} ${base.code} at ${rate.toString()} ${quote.code}`,
+          metadata: { pair, side: dto.side, type: dto.type, price: rate.toString() },
+        },
+        manager,
+      );
 
-    const order = this.orderRepository.create({
-      userId,
-      pair,
-      side: dto.side,
-      type: OrderType.MARKET,
-      quantity: quantityFixed,
-      limitPrice: null,
-      status: OrderStatus.FILLED,
-      holdEntryId: null,
-      fillEntryId: swapResult.entryId,
-      filledPrice: rate.toFixed(quote.decimals),
-      filledAt: new Date(),
+      const repository = manager.getRepository(Order);
+      const order = repository.create({
+        userId,
+        pair,
+        side: dto.side,
+        type: OrderType.MARKET,
+        quantity: quantityFixed,
+        limitPrice: null,
+        status: OrderStatus.FILLED,
+        holdEntryId: null,
+        fillEntryId: swapResult.entryId,
+        filledPrice: rate.toFixed(quote.decimals),
+        filledAt: new Date(),
+      });
+      const savedOrder = await repository.save(order);
+
+      const user = await this.usersService.findById(userId);
+      await this.outboxService.append(
+        {
+          eventType: DomainEventType.ORDER_FILLED,
+          aggregateId: savedOrder.id,
+          payload: {
+            recipientEmail: user?.email ?? null,
+            pair,
+            side: dto.side,
+            quantity: quantityFixed,
+            filledPrice: rate.toFixed(quote.decimals),
+          },
+        },
+        manager,
+      );
+
+      return savedOrder;
     });
-    const saved = await this.orderRepository.save(order);
 
     return this.toDto(saved);
   }

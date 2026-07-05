@@ -1,9 +1,12 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
+import { DomainEventType } from '../common/outbox/domain-event-type.enum';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { CurrencyType } from '../ledger/entities/currency-type.enum';
 import { LedgerService } from '../ledger/ledger.service';
+import { UsersService } from '../users/users.service';
 import { WithdrawalRequest } from './entities/withdrawal-request.entity';
 import { WithdrawalRequestStatus } from './entities/withdrawal-request-status.enum';
 import { WithdrawalsService } from './withdrawals.service';
@@ -13,6 +16,8 @@ describe('WithdrawalsService', () => {
   let ledgerService: jest.Mocked<
     Pick<LedgerService, 'getCurrency' | 'ensureAccount' | 'postEntry'>
   >;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let outboxService: jest.Mocked<Pick<OutboxService, 'append'>>;
   let dataSource: { transaction: jest.Mock };
 
   const createPendingRequest = (overrides: Partial<WithdrawalRequest> = {}): WithdrawalRequest => ({
@@ -47,12 +52,18 @@ describe('WithdrawalsService', () => {
       ensureAccount: jest.fn(),
       postEntry: jest.fn(),
     };
+    usersService = {
+      findById: jest.fn().mockResolvedValue({ id: 'user-1', email: 'jane@example.com' }),
+    };
+    outboxService = { append: jest.fn().mockResolvedValue(undefined) };
     dataSource = { transaction: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WithdrawalsService,
         { provide: LedgerService, useValue: ledgerService },
+        { provide: UsersService, useValue: usersService },
+        { provide: OutboxService, useValue: outboxService },
         { provide: getDataSourceToken(), useValue: dataSource },
         { provide: getRepositoryToken(WithdrawalRequest), useValue: {} },
       ],
@@ -143,6 +154,19 @@ describe('WithdrawalsService', () => {
       );
       expect(result.status).toBe(WithdrawalRequestStatus.APPROVED);
       expect(result.settleEntryId).toBe('settle-entry-1');
+      expect(outboxService.append).toHaveBeenCalledWith(
+        {
+          eventType: DomainEventType.WITHDRAWAL_APPROVED,
+          aggregateId: 'settle-entry-1',
+          payload: {
+            recipientEmail: 'jane@example.com',
+            currency: 'USD',
+            amount: '50.00000000',
+            destination: 'acct-123',
+          },
+        },
+        manager,
+      );
     });
 
     it('rejects with 404 when the request does not exist', async () => {
@@ -200,6 +224,19 @@ describe('WithdrawalsService', () => {
       );
       expect(result.status).toBe(WithdrawalRequestStatus.REJECTED);
       expect(result.settleEntryId).toBe('release-entry-1');
+      expect(outboxService.append).toHaveBeenCalledWith(
+        {
+          eventType: DomainEventType.WITHDRAWAL_REJECTED,
+          aggregateId: 'release-entry-1',
+          payload: {
+            recipientEmail: 'jane@example.com',
+            currency: 'USD',
+            amount: '50.00000000',
+            destination: 'acct-123',
+          },
+        },
+        manager,
+      );
     });
 
     it('rejects with 409 when the request is already decided', async () => {

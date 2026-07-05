@@ -11,7 +11,7 @@ frontend is an Angular "Client Console" SPA that talks to it over `/api/v1`.
 Requirements: Docker and Docker Compose.
 
 ```bash
-# bring up Postgres + the API + the Angular dev server (all with hot reload)
+# bring up Postgres + Kafka + Mailhog + the API + the Angular dev server (all with hot reload)
 docker compose up
 
 # API is now available at:
@@ -20,6 +20,9 @@ curl http://localhost:3000/api/v1/health
 
 # Client Console is now available at:
 open http://localhost:4200
+
+# Make a transfer (see "Transfers quickstart" below), then check the email it triggers:
+open http://localhost:8025
 ```
 
 ## Backend development (without Docker)
@@ -354,6 +357,114 @@ curl "http://localhost:3000/api/v1/orders?status=open" -H "Authorization: Bearer
   this to a curated dropdown (crypto base against a fiat quote) purely for a sane default UI, not
   because the backend enforces it.
 
+## Event-driven architecture: the transactional outbox
+
+Every state-changing feature (deposits, transfers, withdrawal approval/rejection, FX conversion,
+order fills) publishes a domain event — `deposit.completed`, `transfer.completed`,
+`withdrawal.approved`, `withdrawal.rejected`, `fx.converted`, `order.filled` — to Kafka, consumed
+by a `notifications` module that emails the affected user via a dev-only SMTP catcher (Mailhog).
+This exists to demonstrate the thing CLAUDE.md's "Architecture" section states as a design goal:
+that this modular monolith's boundaries are real enough to extract a module into its own service
+without a rewrite. `notifications` proves it concretely — it depends on nothing but Kafka, its own
+`processed_events` table, and SMTP; not one import of `LedgerModule`, `UsersModule`, or any other
+domain module.
+
+The mechanism connecting the two sides is the **transactional outbox pattern**:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant TransfersService
+    participant Postgres
+    participant OutboxPublisher as OutboxPublisherService
+    participant Kafka
+    participant NotificationsConsumer as NotificationsConsumerService
+    participant Mailhog
+
+    Client->>TransfersService: POST /transfers
+    TransfersService->>Postgres: BEGIN
+    TransfersService->>Postgres: INSERT journal_entries / journal_lines (the ledger write)
+    TransfersService->>Postgres: INSERT outbox_events (transfer.completed)
+    TransfersService->>Postgres: COMMIT
+    TransfersService-->>Client: 201 Created
+
+    loop every 5s
+        OutboxPublisher->>Postgres: SELECT unpublished rows FOR UPDATE
+        OutboxPublisher->>Kafka: send(flowpay.events, key=aggregateId)
+        OutboxPublisher->>Postgres: UPDATE published_at, COMMIT
+    end
+
+    Kafka->>NotificationsConsumer: deliver message (at-least-once)
+    NotificationsConsumer->>Postgres: INSERT processed_events ON CONFLICT DO NOTHING
+    alt event_id already claimed
+        NotificationsConsumer-->>Kafka: no-op (already handled)
+    else newly claimed
+        NotificationsConsumer->>Mailhog: send email
+    end
+```
+
+**Why not just publish to Kafka right after the ledger write commits?** Because "commit, then
+publish" straddles a gap no amount of careful code closes: a crash (or a Kafka broker that happens
+to be unreachable) between those two steps either loses the event entirely (the commit succeeded
+but the publish never happened) or, if you reorder it to "publish, then commit," can publish an
+event for a transaction that then rolls back — a **phantom event** describing something that never
+actually happened. The outbox sidesteps both failure modes by writing the event to
+`outbox_events` **in the same database transaction** as the ledger write itself
+(`OutboxService.append(event, manager)` takes its `EntityManager` as a required argument, not an
+optional one, specifically so this can't be gotten wrong): if the transaction commits, the event
+row exists, guaranteed; if it rolls back, the event row never existed, guaranteed. A separate
+`OutboxPublisherService` — a `@nestjs/schedule` cron job, mirroring `OrdersWorkerService`'s
+established pattern in this codebase — polls `outbox_events WHERE published_at IS NULL` every 5
+seconds and publishes each row to Kafka, in its own per-row transaction (lock row, send, mark
+published, commit). This yields **at-least-once delivery**: a crash between Kafka acking the send
+and the row's `published_at` being committed means the row gets published again on the next tick —
+never lost, occasionally duplicated.
+
+Because delivery is at-least-once, **the consumer must be idempotent**, not merely "usually
+correct." `NotificationsConsumerService` claims each event id via
+`INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT (event_id) DO NOTHING RETURNING
+event_id` before doing anything else — the exact same atomic-claim idiom
+`IdempotencyService`'s `idempotency_keys` table already uses for the same reason (see "Payments:
+idempotency & concurrency"). A losing claim (row already existed) means "already handled, skip";
+a winning claim means "mine, send the email." Delivering the same Kafka message twice this way
+still sends exactly one email.
+
+### Design decisions
+
+- **Interfaces + fakes over Testcontainers Kafka.** `EventProducer`/`EventConsumer`
+  (`common/kafka/interfaces/`) are plain TypeScript interfaces with `kafkajs`-backed
+  implementations behind DI tokens (`EVENT_PRODUCER`/`EVENT_CONSUMER`, since interfaces erase at
+  runtime). Everything this feature needs to prove — atomicity of the outbox write, at-least-once
+  publishing, idempotent consumption — is fully testable against an in-memory fake producer or
+  consumer; none of it depends on a real broker's specific wire behavior. This follows the same
+  precedent `RateProvider` already set for `RatesService`: reserve Testcontainers for semantics
+  that genuinely can't be faked (Postgres's actual transaction/locking behavior, in
+  `outbox-atomicity.integration-spec.ts` and `orders-race.integration-spec.ts`), and use fakes for
+  everything else. Adding a second heavyweight Testcontainers dependency just to prove "Kafka
+  redelivers messages" — a documented, assumed property, not something to verify — wasn't worth it.
+- **KRaft-mode Kafka, no Zookeeper** (`apache/kafka:3.9.0`), with the same dual-listener setup
+  Postgres already uses in `docker-compose.yml`: `kafka:29092` for other containers,
+  `localhost:9092` for a backend running natively during `npm run start:dev`.
+- **Kafka connectivity is resilient by design, not just by accident.** `KafkaEventProducer` and
+  `NotificationsConsumerService` both connect/subscribe in a fire-and-forget retry loop with
+  backoff (capped at 30s) instead of `await`ing the connection inside `onModuleInit()` — Kafka
+  being temporarily unreachable at boot must never crash the rest of the app, since notifications
+  are inherently best-effort. `KafkaEventConsumer` additionally listens for kafkajs's own `CRASH`
+  event and resubscribes from scratch, because disabling kafkajs's *internal* connection retry
+  (`retry: { retries: 0 }` — necessary so a genuinely dead broker fails fast instead of leaving
+  sockets and timers open past this app's own shutdown) has the side effect of disabling kafkajs's
+  default crash-auto-restart too. All three retry loops cancel their pending timers in
+  `onModuleDestroy()` so a stopped app doesn't keep retrying in the background.
+- **`notifications`'s module boundary is deliberately narrow.** It imports `KafkaModule` and its
+  own `TypeOrmModule.forFeature([ProcessedEvent])` — nothing else. Every value a rendered email
+  needs (`recipientEmail`, amounts, currencies) is embedded in the event payload at the point the
+  domain service appends it to the outbox, since that's where a `UsersService` lookup is actually
+  available; the consumer never looks anything up itself. This is what makes the "could this become
+  its own microservice tomorrow" claim concrete rather than aspirational.
+- **Plain-text email templates, no templating engine.** `notifications/templates/` is one pure
+  function (`renderEmail(eventType, payload)`) with a `switch`, matching this app's general bias
+  toward the simplest thing that works over pulling in a dependency for six short strings.
+
 ## Client Console (frontend)
 
 An Angular 22 standalone-components SPA (`frontend/`), Angular Material for the UI, signals for
@@ -432,6 +543,13 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
   still only ever filled once, but the redundant scanning/locking work doesn't shard across
   instances. Fine at this app's scale; a production version would want a single leader (or a
   queue-based dispatch) doing the scanning instead.
+- **`.gitlab-ci.yml`'s `test` stage provisions Postgres but not Kafka/Mailhog.** e2e tests boot the
+  full `AppModule`, which now includes Kafka producer/consumer connections — this works today only
+  because of the retry-with-backoff + `onModuleDestroy()` cleanup described in "Event-driven
+  architecture" above (a genuinely unreachable broker fails fast and retries in the background
+  rather than blocking or crashing app bootstrap). A more complete CI setup would add `kafka` as a
+  CI service alongside `postgres` so the outbox is exercised end-to-end in the pipeline too, not
+  just locally via `docker compose up`.
 
 Useful scripts (run from `backend/`):
 

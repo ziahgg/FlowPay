@@ -7,6 +7,8 @@ import Decimal from 'decimal.js';
 import { DataSource } from 'typeorm';
 import { CommonModule } from '../src/common/common.module';
 import { envSchema } from '../src/common/config/env.schema';
+import { KafkaEventConsumer } from '../src/common/kafka/kafka-event-consumer';
+import { KafkaEventProducer } from '../src/common/kafka/kafka-event-producer';
 import { AccountKind } from '../src/ledger/entities/account-kind.enum';
 import { Currency } from '../src/ledger/entities/currency.entity';
 import { CurrencyType } from '../src/ledger/entities/currency-type.enum';
@@ -16,6 +18,7 @@ import { LedgerService } from '../src/ledger/ledger.service';
 import { CreateLedgerCore1751600000000 } from '../src/migrations/1751600000000-CreateLedgerCore';
 import { CreateUsersTable1751500000000 } from '../src/migrations/1751500000000-CreateUsersTable';
 import { CreateOrders1751900000000 } from '../src/migrations/1751900000000-CreateOrders';
+import { CreateOutbox1752000000000 } from '../src/migrations/1752000000000-CreateOutbox';
 import { RateProvider } from '../src/rates/interfaces/rate-provider.interface';
 import { CoinGeckoRateProvider } from '../src/rates/providers/coingecko-rate.provider';
 import { CreateOrderDto } from '../src/trading/dto/create-order.dto';
@@ -75,6 +78,7 @@ describe('Orders cancel-vs-fill race (integration, real Postgres via Testcontain
         CreateUsersTable1751500000000,
         CreateLedgerCore1751600000000,
         CreateOrders1751900000000,
+        CreateOutbox1752000000000,
       ],
     });
     await migrationDataSource.initialize();
@@ -107,6 +111,14 @@ describe('Orders cancel-vs-fill race (integration, real Postgres via Testcontain
         get: (key: string) =>
           key === 'RATE_CACHE_TTL_MS' ? 1 : (defaultEnvConfig as Record<string, unknown>)[key],
       })
+      // No real Kafka broker in this test -- TradingModule pulls in OutboxModule (for the
+      // ORDER_FILLED event appended on fill) which pulls in KafkaModule. Without this override,
+      // Nest would instantiate the real classes and their onModuleInit would try to connect to a
+      // broker that isn't provisioned here.
+      .overrideProvider(KafkaEventProducer)
+      .useValue({ send: jest.fn().mockResolvedValue(undefined) })
+      .overrideProvider(KafkaEventConsumer)
+      .useValue({ subscribe: jest.fn().mockResolvedValue(undefined) })
       .compile();
 
     dataSource = moduleRef.get(DataSource);

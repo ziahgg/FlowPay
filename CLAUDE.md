@@ -263,11 +263,54 @@ frontend/src/app/
       `currencies` at request time (see `trading/pair.util.ts`), matching FX's "any two distinct
       currencies" flexibility rather than a curated whitelist.
 
+11. **Domain events go through the transactional outbox — never publish to Kafka directly.**
+    - `OutboxService.append(event, manager)` takes its `EntityManager` as a **required** argument,
+      not optional, forcing every call site to append the event inside the same transaction as the
+      domain write it describes. This is what makes the outbox pattern's guarantee hold: if the
+      transaction commits, the event row is guaranteed to exist; if it rolls back, the event row
+      never existed either. Publish-after-commit (two separate steps) can't offer this — a crash
+      between them either loses the event or, reordered, publishes a phantom event for a
+      transaction that then rolls back. See "Event-driven architecture" in
+      [README.md](README.md) for the full write-up and sequence diagram.
+    - `OutboxPublisherService` (a `@nestjs/schedule` `@Cron` job, mirroring `OrdersWorkerService`'s
+      established pattern) polls `outbox_events WHERE published_at IS NULL` every 5 seconds and
+      publishes each row to Kafka's `flowpay.events` topic (keyed by `aggregateId`) in its own
+      per-row transaction — lock row, send, mark `published_at`, commit. This yields **at-least-once
+      delivery**, not exactly-once: a crash between the Kafka ack and the commit republishes the row
+      on the next tick. Every consumer must be idempotent as a consequence — never assume a message
+      is delivered exactly once.
+    - `notifications/` is the one consumer today (`NotificationsConsumerService`, via `kafkajs`),
+      and its module boundary is deliberately narrow: it imports only `KafkaModule` and its own
+      `processed_events` table — no `LedgerModule`, `UsersModule`, or other domain module. Every
+      value an email template needs (`recipientEmail`, amounts, currencies) must be embedded in the
+      event payload by the domain service appending it, since that's the only place a `UsersService`
+      lookup is available; the consumer is not allowed to reach back into another module to fetch
+      what it's missing. This narrowness is the concrete proof the module could be extracted into
+      its own microservice tomorrow with no code changes beyond the deployment boundary.
+    - Idempotent consumption uses the exact same atomic-claim idiom as `IdempotencyService`'s
+      `idempotency_keys` table (convention 7): `INSERT INTO processed_events (event_id) VALUES ($1)
+      ON CONFLICT (event_id) DO NOTHING RETURNING event_id`. A losing claim means "already handled,
+      no-op"; a winning claim means "mine, proceed." Any future Kafka consumer must dedupe the same
+      way — do not assume a topic's delivery semantics will save you from a duplicate.
+    - Kafka access goes through `EventProducer`/`EventConsumer` interfaces (`common/kafka/`), never
+      `kafkajs` directly from a domain module — the same strategy-interface precedent
+      `RateProvider` already set for `RatesService`, and why unit tests fake the broker instead of
+      running one (Testcontainers is reserved for Postgres semantics that can't be faked; see
+      `outbox-atomicity.integration-spec.ts`).
+    - Both `KafkaEventProducer` and `NotificationsConsumerService` connect/subscribe via a
+      fire-and-forget retry loop with capped backoff, never an `await`ed call inside
+      `onModuleInit()` — Kafka being unreachable at boot must never crash the rest of the app.
+      `KafkaEventConsumer` additionally listens for kafkajs's own `CRASH` event and resubscribes
+      from scratch, because the client-level `retry: { retries: 0 }` needed for clean shutdown
+      (so a dead broker fails fast instead of leaving sockets/timers open past `onModuleDestroy()`)
+      also disables kafkajs's default crash-auto-restart as a side effect. Every retry loop cancels
+      its own pending timer in `onModuleDestroy()`.
+
 ## Local development
 
 See [README.md](README.md) for the quickstart. In short: `docker compose up` brings up Postgres +
-the API + the Angular dev server, all with hot reload. Backend: `npm run lint`, `npm run test`, and
-`npm run test:e2e` run inside `backend/`; `npm run test:integration` runs the Testcontainers-backed
-ledger integration suite and requires a local Docker daemon (see "Known simplifications" in
-[README.md](README.md)). Frontend: `npm run lint`, `npm test`, and `npm run build` run inside
-`frontend/`.
+Kafka + Mailhog + the API + the Angular dev server, all with hot reload. Backend: `npm run lint`,
+`npm run test`, and `npm run test:e2e` run inside `backend/`; `npm run test:integration` runs the
+Testcontainers-backed ledger integration suite and requires a local Docker daemon (see "Known
+simplifications" in [README.md](README.md)). Frontend: `npm run lint`, `npm test`, and
+`npm run build` run inside `frontend/`.
