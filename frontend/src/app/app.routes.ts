@@ -40,6 +40,11 @@ export const routes: Routes = [
     canActivate: [authGuard],
   },
   {
+    path: 'trade',
+    loadComponent: () => import('./features/trade/trade').then((m) => m.Trade),
+    canActivate: [authGuard],
+  },
+  {
     path: 'admin/withdrawals',
     loadComponent: () =>
       import('./features/admin/admin-withdrawals/admin-withdrawals').then(

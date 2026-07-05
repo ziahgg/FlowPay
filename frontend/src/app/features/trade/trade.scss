@@ -1,0 +1,60 @@
+.trade-card {
+  margin-bottom: 2.5rem;
+  max-width: 640px;
+}
+
+.trade-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-top: 0.5rem;
+
+  mat-form-field {
+    width: 220px;
+  }
+}
+
+.price-panel {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mat-sys-primary) 6%, transparent);
+  display: flex;
+  align-items: center;
+}
+
+.price-value {
+  font-weight: 600;
+}
+
+.toggle-group {
+  height: 40px;
+}
+
+.estimate {
+  width: 100%;
+  margin: 0;
+  font-size: 0.875rem;
+  opacity: 0.75;
+}
+
+.submit-button {
+  height: 40px;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.history-filter {
+  width: 160px;
+}
+
+.orders-table {
+  width: 100%;
+}

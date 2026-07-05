@@ -284,6 +284,76 @@ curl -X POST http://localhost:3000/api/v1/fx/convert \
   with no user-specific information, matching how a real exchange exposes rates/quotes publicly
   while gating the actual trade behind auth.
 
+## Trading quickstart
+
+Simulated spot trading (market and limit orders) on top of the FX rates. **No real matching
+engine**: every order — a market order, or a limit order once triggered — executes against the
+platform (treasury), never against another user's order.
+
+```bash
+# market order -- executes immediately at the current rate (no spread, unlike FX conversion)
+curl -X POST http://localhost:3000/api/v1/orders \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <accessToken>" \
+  -d '{"pair":"BTC/USD","side":"buy","type":"market","quantity":"0.01"}'
+# => {"id":"...","pair":"BTC/USD","side":"buy","type":"market","quantity":"0.01000000",
+#     "limitPrice":null,"status":"filled","holdEntryId":null,"fillEntryId":"...",
+#     "filledPrice":"...","filledAt":"...","createdAt":"..."}
+
+# limit order -- holds funds immediately, fills later if the price crosses (checked every ~10s)
+curl -X POST http://localhost:3000/api/v1/orders \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <accessToken>" \
+  -d '{"pair":"BTC/USD","side":"buy","type":"limit","quantity":"0.01","limitPrice":"50000.00"}'
+# => {"id":"...","status":"open","holdEntryId":"...","limitPrice":"50000.00",...}
+
+# cancel an open order -- releases the hold back to the wallet
+curl -X DELETE http://localhost:3000/api/v1/orders/<id> -H "Authorization: Bearer <accessToken>"
+
+# own orders, optionally filtered by status
+curl "http://localhost:3000/api/v1/orders?status=open" -H "Authorization: Bearer <accessToken>"
+```
+
+### Design decisions
+
+- **No real matching engine, stated up front.** FlowPay simulates a venue where the platform is
+  always the counterparty, not a peer-to-peer order book — the same simplification the whole app is
+  built on (no real currency, no real blockchain).
+- **Market orders execute at the raw rate, with no spread** — unlike FX conversion's
+  `FX_SPREAD_BPS`. Trading and FX conversion are treated as separate pricing surfaces; keeping
+  trading spread-free keeps its math (and its tests) simple, with no requirement to charge one.
+- **Shared execution logic via `TradeExecutionService`** (`common/trade-execution/`, extracted from
+  FX conversion rather than duplicated): the one place that knows how to post an atomic 2-currency
+  ledger swap (debit source / credit treasury[from], debit treasury[to] / credit destination
+  wallet). FX conversion and every trade fill call the *same* method — the only thing that varies
+  per caller is the *source* account: a user's own wallet for FX and market orders, or the pooled
+  `trade_hold[currency]` account for a filled limit order.
+- **Limit-order holds are sized so the hold and the eventual fill are always byte-identical.** A buy
+  limit holds `quantity × limitPrice` of the *quote* currency (the worst-case cost); a sell limit
+  holds `quantity` of the *base* currency (fixed, price-independent). Crucially, **a triggered limit
+  order fills at its own limit price, not the prevailing market rate** — so the amount consumed from
+  the hold is always exactly what was reserved, with no partial-release reconciliation step needed.
+- **The hold/fill/release ledger flow mirrors withdrawals' hold/settle/release**, with
+  `trade_hold[currency]` (a new pooled system account, seeded per currency like `treasury`) playing
+  the role `withdrawal_pending[currency]` plays there: **hold** (`TRADE_HOLD` entry: debit
+  user/credit `trade_hold`) on limit placement, **fill** (`TRADE` entry, via
+  `TradeExecutionService`) on a crossed limit or an immediate market order, **release**
+  (`TRADE_RELEASE` entry: debit `trade_hold`/credit user — the exact inverse of the hold) on cancel.
+- **Cancel-vs-fill race, guarded by the same row-lock pattern as withdrawals' maker-checker guard.**
+  `OrdersService.cancelOrder()` and `OrdersWorkerService.tryFill()` both lock the order row with
+  `SELECT ... FOR UPDATE` and re-check `status === 'open'` before acting. Whichever transaction's
+  lock wins commits its outcome; the other sees the already-updated status once it acquires the lock
+  and safely no-ops (a fill returns `false`; a cancel throws `409`) — a hold is released **exactly
+  once**, never both, never neither. Verified under real concurrent transactions (not mocks) in
+  `test/orders-race.integration-spec.ts`, run 20 times in a loop to shake out timing-dependent bugs.
+- **The worker (`OrdersWorkerService`) is a `@nestjs/schedule` `@Cron` job, ticking every ~10s**,
+  scanning all `status = 'open' AND type = 'limit'` orders and calling the same `tryFill()` exercised
+  by the race tests above. It logs and continues past any single order's failure rather than letting
+  one bad row stop the whole scan.
+- **No trading-pairs table.** `pair` is a free-form `"BASE/QUOTE"` string, split and validated
+  against the `currencies` table per request (base and quote must both exist and differ) —
+  consistent with FX's "any two distinct currencies" flexibility. The frontend's Trade page narrows
+  this to a curated dropdown (crypto base against a fiat quote) purely for a sane default UI, not
+  because the backend enforces it.
+
 ## Client Console (frontend)
 
 An Angular 22 standalone-components SPA (`frontend/`), Angular Material for the UI, signals for
@@ -292,10 +362,11 @@ enable CORS, so the dev server proxies `/api` to it (see `frontend/proxy.conf.js
 calling it cross-origin.
 
 **Pages**: login/register, a dashboard with one balance card per currency and quick actions
-(deposit, transfer, withdraw, convert), a transactions table (server-side paginated, filterable by
-currency), withdrawals (request + own history with status chips), transfers (send + history,
-sent/received), convert (live quote refreshed automatically, confirm dialog showing the rate and
-spread before submitting), and an admin area (pending withdrawals with approve/reject, visible only
+(deposit, transfer, withdraw, convert, trade), a transactions table (server-side paginated,
+filterable by currency), withdrawals (request + own history with status chips), transfers (send +
+history, sent/received), convert (live quote refreshed automatically, confirm dialog showing the
+rate and spread before submitting), trade (live price, market/limit buy/sell, open orders with
+cancel, order history), and an admin area (pending withdrawals with approve/reject, visible only
 when the JWT's role is `admin`).
 
 ### Manual walkthrough / capturing screenshots
@@ -314,10 +385,13 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
 5. As Jane: **Convert** some USD to BTC from the Convert page — watch the quote update live as you
    change the amount, confirm the dialog shows the rate and spread, and check the dashboard balance
    updates for both currencies afterward.
-6. Log in as `admin@flowpay.dev` (password from `SEED_ADMIN_PASSWORD`, default `ChangeMe123!`) —
+6. As Jane: place a **market buy** on the Trade page — it fills instantly, moving both balances.
+   Then place a **limit buy** far below the live price — it appears under "Open orders" with funds
+   held, and **Cancel** it to see the hold released back to the wallet.
+7. Log in as `admin@flowpay.dev` (password from `SEED_ADMIN_PASSWORD`, default `ChangeMe123!`) —
    note the "Admin" nav link only appears for this account — and **approve** or **reject** the
    pending request from Admin → Withdrawals.
-7. Back as Jane, confirm the balance and the Transactions page reflect every step.
+8. Back as Jane, confirm the balance and the Transactions page reflect every step.
 
 ### Known simplifications (frontend)
 
@@ -332,6 +406,9 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
   (by design, to keep that endpoint from leaking user data to a party who didn't ask for it beyond
   what's needed to decide), so the admin review screen is judged on destination + amount alone.
   Surfacing the requester would need a backend DTO change, out of scope for a frontend-only task.
+- **The Trade page's pair dropdown is a curated, hardcoded list** (each crypto currency against
+  each fiat currency) rather than every combinatorial pair the backend would technically accept —
+  a deliberate, sane default for the UI, not a backend restriction (see "Trading quickstart").
 
 ## Known simplifications
 
@@ -349,6 +426,12 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
   underlying operation and marking the key `completed` (see "Payments: idempotency & concurrency"
   above). `IDEMPOTENCY_STALE_MS` reclaims it on the next attempt rather than blocking forever, but
   this is a mitigation, not a full fix — a proper fix needs an outbox/saga pattern, out of scope here.
+- **The limit-order matching worker isn't distributed-safe, only correctness-safe.** Running
+  multiple backend instances means each instance's own `@Cron` job independently scans and attempts
+  every open limit order — the row-lock guard (see "Trading quickstart") ensures a given order is
+  still only ever filled once, but the redundant scanning/locking work doesn't shard across
+  instances. Fine at this app's scale; a production version would want a single leader (or a
+  queue-based dispatch) doing the scanning instead.
 
 Useful scripts (run from `backend/`):
 

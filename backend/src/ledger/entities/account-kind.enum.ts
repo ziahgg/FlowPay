@@ -3,4 +3,5 @@ export enum AccountKind {
   TREASURY = 'treasury',
   FEES = 'fees',
   WITHDRAWAL_PENDING = 'withdrawal_pending',
+  TRADE_HOLD = 'trade_hold',
 }

@@ -54,6 +54,10 @@ export class Dashboard {
     void this.router.navigate(['/convert']);
   }
 
+  protected goToTrade(): void {
+    void this.router.navigate(['/trade']);
+  }
+
   private loadBalances(): void {
     this.loading.set(true);
     this.accountsService.getBalances().subscribe({

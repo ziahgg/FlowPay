@@ -6,4 +6,6 @@ export enum JournalEntryType {
   TRANSFER = 'transfer',
   FX_CONVERT = 'fx_convert',
   TRADE = 'trade',
+  TRADE_HOLD = 'trade_hold',
+  TRADE_RELEASE = 'trade_release',
 }

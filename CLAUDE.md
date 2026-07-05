@@ -47,7 +47,7 @@ frontend/src/app/
                  module, functional interceptors (auth, error), functional guards (auth/admin/guest)
   shared/        reusable presentational components (dialogs, cards, chips) and pipes
   features/      one folder per page/route (auth, dashboard, transactions, withdrawals, transfer,
-                 convert, admin), lazy-loaded via `loadComponent` in app.routes.ts
+                 convert, trade, admin), lazy-loaded via `loadComponent` in app.routes.ts
 ```
 
 ## Tech stack
@@ -190,7 +190,8 @@ frontend/src/app/
      immediately render as invalid with no user interaction. Inject the directive
      (`@ViewChild(FormGroupDirective)`) and call `formDirective.resetForm(value)` instead, which
      resets both together. (Caught by manually exercising the transfer form after a successful
-     send — the empty recipient/amount fields lit up red immediately.)
+     send — the empty recipient/amount fields lit up red immediately; re-caught the same way on the
+     Trade page's order form, confirming this is a recurring trap worth checking on every new form.)
    - The transfer form's Idempotency-Key handling is the reference implementation for any future
      retryable mutation: generate the key with `crypto.randomUUID()` on the *first* attempt of a
      logical operation, hold it in a plain field (not a signal — it doesn't drive the template),
@@ -220,12 +221,47 @@ frontend/src/app/
      rounding), applied via `decimal.js`'s `toDecimalPlaces`/`toFixed` — chosen because it doesn't
      bias amounts in one direction over many conversions. Use this rounding mode for any future
      money computation that must truncate to a currency's precision, not `ROUND_HALF_UP`.
-   - `POST /fx/convert` posts one atomic 4-line `LedgerService.postEntry()` call (debit
-     user[from]/credit treasury[from], debit treasury[to]/credit user[to] at the net rate) — the
-     spread is never a separate fee line, it's the implicit difference between what the treasury
-     receives and what it gives up. It reuses `IdempotencyService` exactly like transfers (see
-     convention 7); do not build a second idempotency mechanism for money-moving FX-adjacent
+   - `POST /fx/convert` posts one atomic 4-line entry via `TradeExecutionService.executeSwap()`
+     (debit user[from]/credit treasury[from], debit treasury[to]/credit user[to] at the net rate) —
+     the spread is never a separate fee line, it's the implicit difference between what the
+     treasury receives and what it gives up. It reuses `IdempotencyService` exactly like transfers
+     (see convention 7); do not build a second idempotency mechanism for money-moving FX-adjacent
      features.
+
+10. **Trading (orders): shared swap execution, hold/fill/release, and the cancel-vs-fill race guard.**
+    - `TradeExecutionService` (`common/trade-execution/`) is the *only* place that builds a 2-currency
+      ledger swap: debit a `source` account / credit `treasury[source.currency]`, then debit
+      `treasury[toCurrency]` / credit the destination user's wallet. FX conversion and every trade
+      fill (market or a triggered limit) call `executeSwap()` — never re-duplicate this 4-line
+      pattern inline in a feature service. The only thing that varies per caller is the `source`
+      account: a user's own wallet for FX conversion and market orders, or the pooled
+      `trade_hold[currency]` system account for a filled limit order.
+    - Market orders execute immediately at the current `RatesService` rate, with **no spread** —
+      deliberately different from FX conversion's `FX_SPREAD_BPS`; trading and FX are separate
+      pricing surfaces.
+    - A limit order's hold amount is computed by `computeHoldAmount()`/`holdCurrencyCode()`
+      (`trading/order-math.util.ts`) and reused verbatim at hold-placement, cancel-release, and
+      worker-fill time, so the amount posted to the ledger is always byte-identical to what's
+      already sitting in `trade_hold[currency]` — recomputed from the order's own stored
+      `quantity`/`limitPrice` rather than stored in an extra column. A triggered limit order fills
+      **at its own limit price, not the prevailing market rate**, which is what keeps the hold and
+      the fill exactly equal (no partial-release reconciliation needed).
+    - The hold/fill/release ledger flow mirrors withdrawals' hold/settle/release (convention 6):
+      `TRADE_HOLD` (debit user/credit `trade_hold`) on limit placement, `TRADE` (via
+      `TradeExecutionService`) on fill, `TRADE_RELEASE` (debit `trade_hold`/credit user) on cancel.
+    - **Cancel-vs-fill is guarded by the same row-lock pattern as the withdrawals maker-checker
+      guard**: `OrdersService.cancelOrder()` and `OrdersWorkerService.tryFill()` both lock the order
+      row with `manager.findOne(Order, { lock: { mode: 'pessimistic_write' } })` and re-check
+      `status === 'open'` before acting, inside the same transaction as the ledger entry. Whichever
+      transaction's lock wins commits its outcome; the other sees the already-updated status and
+      safely no-ops. Do not add a new "is this order still open" check that isn't inside the same
+      locked transaction as the entry it guards — an out-of-transaction check is not a guard.
+    - `OrdersWorkerService` is a `@nestjs/schedule` `@Cron` job (ticking every ~10s) that scans
+      `status = 'open' AND type = 'limit'` orders and calls the same `tryFill()` used by the
+      cancel-vs-fill race tests — there is no separate "worker-only" fill code path to keep in sync.
+    - No trading-pairs table: `pair` is a `"BASE/QUOTE"` string split and validated against
+      `currencies` at request time (see `trading/pair.util.ts`), matching FX's "any two distinct
+      currencies" flexibility rather than a curated whitelist.
 
 ## Local development
 

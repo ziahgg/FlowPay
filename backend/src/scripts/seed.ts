@@ -24,6 +24,7 @@ const SYSTEM_ACCOUNT_KINDS = [
   AccountKind.TREASURY,
   AccountKind.FEES,
   AccountKind.WITHDRAWAL_PENDING,
+  AccountKind.TRADE_HOLD,
 ];
 
 async function seedAdmin(): Promise<void> {

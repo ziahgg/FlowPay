@@ -4,11 +4,10 @@ import Decimal from 'decimal.js';
 import { EnvConfig } from '../common/config/env.schema';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { RunIdempotentResult } from '../common/idempotency/interfaces/run-idempotent.interface';
+import { TradeExecutionService } from '../common/trade-execution/trade-execution.service';
 import { AccountKind } from '../ledger/entities/account-kind.enum';
 import { Currency } from '../ledger/entities/currency.entity';
 import { JournalEntryType } from '../ledger/entities/journal-entry-type.enum';
-import { JournalLineDirection } from '../ledger/entities/journal-line-direction.enum';
-import { PostEntryLineInput } from '../ledger/interfaces/post-entry.interface';
 import { LedgerService } from '../ledger/ledger.service';
 import { RatesService } from '../rates/rates.service';
 import { ConvertDto } from './dto/convert.dto';
@@ -37,6 +36,7 @@ export class FxService {
     private readonly ledgerService: LedgerService,
     private readonly ratesService: RatesService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly tradeExecutionService: TradeExecutionService,
     private readonly configService: ConfigService<EnvConfig, true>,
   ) {}
 
@@ -105,13 +105,13 @@ export class FxService {
   }
 
   /**
-   * Posts one atomic multi-currency entry: debit user[from] / credit treasury[from] at the
-   * user's original amount, then debit treasury[to] / credit user[to] at the net (spread-adjusted)
-   * amount. Each currency balances independently (LedgerService enforces this). The spread is
-   * never booked as a separate fee line -- it is simply the difference between what the treasury
-   * receives (raw `from` amount) and what it gives up (net, spread-reduced `to` amount), so it
-   * accumulates implicitly in the treasury's position over time. See README "FX conversion
-   * quickstart" for the full rationale.
+   * Posts one atomic multi-currency entry via the shared TradeExecutionService: debit user[from] /
+   * credit treasury[from] at the user's original amount, then debit treasury[to] / credit user[to]
+   * at the net (spread-adjusted) amount. Each currency balances independently (LedgerService
+   * enforces this). The spread is never booked as a separate fee line -- it is simply the
+   * difference between what the treasury receives (raw `from` amount) and what it gives up (net,
+   * spread-reduced `to` amount), so it accumulates implicitly in the treasury's position over time.
+   * See README "FX conversion quickstart" for the full rationale.
    */
   private async executeConvert(
     userId: string,
@@ -121,58 +121,17 @@ export class FxService {
     const { fromCurrency, toCurrency, fromAmount, toAmount, rate, netRate, spreadBps, source } =
       computation;
 
-    const [fromWallet, toWallet, treasuryFrom, treasuryTo] = await Promise.all([
-      this.ledgerService.ensureAccount({
+    const result = await this.tradeExecutionService.executeSwap({
+      source: {
         ownerUserId: userId,
         currencyCode: fromCurrency.code,
         kind: AccountKind.USER_WALLET,
-      }),
-      this.ledgerService.ensureAccount({
-        ownerUserId: userId,
-        currencyCode: toCurrency.code,
-        kind: AccountKind.USER_WALLET,
-      }),
-      this.ledgerService.ensureAccount({
-        ownerUserId: null,
-        currencyCode: fromCurrency.code,
-        kind: AccountKind.TREASURY,
-      }),
-      this.ledgerService.ensureAccount({
-        ownerUserId: null,
-        currencyCode: toCurrency.code,
-        kind: AccountKind.TREASURY,
-      }),
-    ]);
-
-    const lines: PostEntryLineInput[] = [
-      {
-        accountId: fromWallet.id,
-        direction: JournalLineDirection.DEBIT,
-        amount: fromAmount,
-        currencyCode: fromCurrency.code,
       },
-      {
-        accountId: treasuryFrom.id,
-        direction: JournalLineDirection.CREDIT,
-        amount: fromAmount,
-        currencyCode: fromCurrency.code,
-      },
-      {
-        accountId: treasuryTo.id,
-        direction: JournalLineDirection.DEBIT,
-        amount: toAmount,
-        currencyCode: toCurrency.code,
-      },
-      {
-        accountId: toWallet.id,
-        direction: JournalLineDirection.CREDIT,
-        amount: toAmount,
-        currencyCode: toCurrency.code,
-      },
-    ];
-
-    const result = await this.ledgerService.postEntry({
-      type: JournalEntryType.FX_CONVERT,
+      fromAmount,
+      toUserId: userId,
+      toCurrencyCode: toCurrency.code,
+      toAmount,
+      entryType: JournalEntryType.FX_CONVERT,
       description: `Converted ${fromAmount} ${fromCurrency.code} to ${toAmount} ${toCurrency.code}`,
       metadata: {
         rate: rate.toString(),
@@ -180,7 +139,6 @@ export class FxService {
         spreadBps,
         rateSource: source,
       },
-      lines,
     });
 
     const body: ConvertResponseDto = {
@@ -192,8 +150,8 @@ export class FxService {
       rate: rate.toString(),
       netRate: netRate.toString(),
       spreadBps,
-      fromBalance: result.balances[fromWallet.id],
-      toBalance: result.balances[toWallet.id],
+      fromBalance: result.sourceBalance,
+      toBalance: result.toBalance,
     };
 
     return { body, entryId: result.entryId };

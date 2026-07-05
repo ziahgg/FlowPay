@@ -1,0 +1,249 @@
+<div class="page-header">
+  <h1>Trade</h1>
+</div>
+
+<mat-card appearance="outlined" class="trade-card">
+  <mat-card-header>
+    <mat-card-title>Place an order</mat-card-title>
+    <mat-card-subtitle>
+      Simulated trading -- market orders execute instantly against the platform; limit orders wait
+      for the price to cross.
+    </mat-card-subtitle>
+  </mat-card-header>
+
+  <mat-card-content>
+    <form [formGroup]="form" (ngSubmit)="submit()" class="trade-form">
+      <mat-form-field appearance="outline">
+        <mat-label>Pair</mat-label>
+        <mat-select formControlName="pair">
+          @for (pair of pairs; track pair) {
+            <mat-option [value]="pair">{{ pair }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <div class="price-panel">
+        @if (priceLoading() && !livePrice()) {
+          <mat-progress-spinner diameter="20" mode="indeterminate" />
+        } @else if (livePrice(); as price) {
+          <span class="price-value">
+            1 {{ baseOf(form.controls.pair.value) }} =
+            {{ price | currencyAmount: decimalsFor(quoteOf(form.controls.pair.value)) }}
+            {{ quoteOf(form.controls.pair.value) }}
+          </span>
+        } @else {
+          <span class="price-value">Price unavailable</span>
+        }
+      </div>
+
+      <mat-button-toggle-group formControlName="side" class="toggle-group">
+        <mat-button-toggle value="buy">Buy</mat-button-toggle>
+        <mat-button-toggle value="sell">Sell</mat-button-toggle>
+      </mat-button-toggle-group>
+
+      <mat-button-toggle-group formControlName="type" class="toggle-group">
+        <mat-button-toggle value="market">Market</mat-button-toggle>
+        <mat-button-toggle value="limit">Limit</mat-button-toggle>
+      </mat-button-toggle-group>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Quantity ({{ baseOf(form.controls.pair.value) }})</mat-label>
+        <input matInput formControlName="quantity" placeholder="0.01" />
+        @if (form.controls.quantity.hasError('required')) {
+          <mat-error>Quantity is required.</mat-error>
+        } @else if (form.controls.quantity.hasError('pattern')) {
+          <mat-error>Enter a positive number with up to 8 decimal places.</mat-error>
+        }
+      </mat-form-field>
+
+      @if (isLimit) {
+        <mat-form-field appearance="outline">
+          <mat-label>Limit price ({{ quoteOf(form.controls.pair.value) }})</mat-label>
+          <input matInput formControlName="limitPrice" placeholder="50000.00" />
+          @if (form.controls.limitPrice.hasError('required')) {
+            <mat-error>Limit price is required for a limit order.</mat-error>
+          } @else if (form.controls.limitPrice.hasError('pattern')) {
+            <mat-error>Enter a positive number with up to 8 decimal places.</mat-error>
+          }
+        </mat-form-field>
+      }
+
+      @if (!isLimit && estimatedTotal(); as total) {
+        <p class="estimate">
+          Estimated {{ form.controls.side.value === 'buy' ? 'cost' : 'proceeds' }}:
+          {{ total | currencyAmount: decimalsFor(quoteOf(form.controls.pair.value)) }}
+          {{ quoteOf(form.controls.pair.value) }}
+        </p>
+      }
+
+      <button
+        mat-flat-button
+        [color]="form.controls.side.value === 'buy' ? 'primary' : 'warn'"
+        type="submit"
+        class="submit-button"
+        [disabled]="submitting()"
+      >
+        @if (submitting()) {
+          <mat-progress-spinner diameter="20" mode="indeterminate" />
+        } @else {
+          {{ form.controls.side.value === 'buy' ? 'Buy' : 'Sell' }}
+          {{ form.controls.type.value === 'limit' ? '(limit)' : '(market)' }}
+        }
+      </button>
+    </form>
+  </mat-card-content>
+</mat-card>
+
+<div class="page-header history-header">
+  <h1>Open orders</h1>
+</div>
+
+@if (loadingOpen()) {
+  <div class="loading-state">
+    <mat-progress-spinner mode="indeterminate" diameter="40" />
+  </div>
+} @else if (openOrders().length === 0) {
+  <div class="empty-state">
+    <mat-icon>pending_actions</mat-icon>
+    <p>No open orders.</p>
+  </div>
+} @else {
+  <table mat-table [dataSource]="openOrders()" class="orders-table">
+    <ng-container matColumnDef="createdAt">
+      <th mat-header-cell *matHeaderCellDef>Placed</th>
+      <td mat-cell *matCellDef="let order">{{ order.createdAt | date: 'medium' }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="pair">
+      <th mat-header-cell *matHeaderCellDef>Pair</th>
+      <td mat-cell *matCellDef="let order">{{ order.pair }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="side">
+      <th mat-header-cell *matHeaderCellDef>Side</th>
+      <td mat-cell *matCellDef="let order">{{ order.side | titlecase }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="quantity">
+      <th mat-header-cell *matHeaderCellDef>Quantity</th>
+      <td mat-cell *matCellDef="let order">
+        {{ order.quantity | currencyAmount: decimalsFor(baseOf(order.pair)) }}
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="limitPrice">
+      <th mat-header-cell *matHeaderCellDef>Limit price</th>
+      <td mat-cell *matCellDef="let order">
+        {{ order.limitPrice | currencyAmount: decimalsFor(quoteOf(order.pair)) }}
+        {{ quoteOf(order.pair) }}
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef></th>
+      <td mat-cell *matCellDef="let order">
+        <button mat-stroked-button color="warn" type="button" (click)="cancelOrder(order)">
+          Cancel
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="openColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: openColumns"></tr>
+  </table>
+
+  <mat-paginator
+    [length]="openTotal()"
+    [pageIndex]="openPageIndex()"
+    [pageSize]="openPageSize()"
+    [pageSizeOptions]="[10, 20, 50]"
+    (page)="onOpenPageChange($event)"
+  />
+}
+
+<div class="page-header history-header">
+  <h1>History</h1>
+
+  <mat-form-field appearance="outline" class="history-filter">
+    <mat-label>Status</mat-label>
+    <mat-select [value]="historyFilter()" (selectionChange)="onHistoryFilterChange($event.value)">
+      <mat-option value="all">All</mat-option>
+      <mat-option value="open">Open</mat-option>
+      <mat-option value="filled">Filled</mat-option>
+      <mat-option value="cancelled">Cancelled</mat-option>
+    </mat-select>
+  </mat-form-field>
+</div>
+
+@if (loadingHistory()) {
+  <div class="loading-state">
+    <mat-progress-spinner mode="indeterminate" diameter="40" />
+  </div>
+} @else if (history().length === 0) {
+  <div class="empty-state">
+    <mat-icon>receipt_long</mat-icon>
+    <p>No orders yet.</p>
+  </div>
+} @else {
+  <table mat-table [dataSource]="history()" class="orders-table">
+    <ng-container matColumnDef="createdAt">
+      <th mat-header-cell *matHeaderCellDef>Placed</th>
+      <td mat-cell *matCellDef="let order">{{ order.createdAt | date: 'medium' }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="pair">
+      <th mat-header-cell *matHeaderCellDef>Pair</th>
+      <td mat-cell *matCellDef="let order">{{ order.pair }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="side">
+      <th mat-header-cell *matHeaderCellDef>Side</th>
+      <td mat-cell *matCellDef="let order">{{ order.side | titlecase }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="type">
+      <th mat-header-cell *matHeaderCellDef>Type</th>
+      <td mat-cell *matCellDef="let order">{{ order.type | titlecase }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="quantity">
+      <th mat-header-cell *matHeaderCellDef>Quantity</th>
+      <td mat-cell *matCellDef="let order">
+        {{ order.quantity | currencyAmount: decimalsFor(baseOf(order.pair)) }}
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="filledPrice">
+      <th mat-header-cell *matHeaderCellDef>Price</th>
+      <td mat-cell *matCellDef="let order">
+        @if (order.filledPrice) {
+          {{ order.filledPrice | currencyAmount: decimalsFor(quoteOf(order.pair)) }}
+          {{ quoteOf(order.pair) }}
+        } @else if (order.limitPrice) {
+          {{ order.limitPrice | currencyAmount: decimalsFor(quoteOf(order.pair)) }}
+          {{ quoteOf(order.pair) }} (limit)
+        } @else {
+          &mdash;
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="status">
+      <th mat-header-cell *matHeaderCellDef>Status</th>
+      <td mat-cell *matCellDef="let order">
+        <app-status-chip [status]="order.status" />
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="historyColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: historyColumns"></tr>
+  </table>
+
+  <mat-paginator
+    [length]="historyTotal()"
+    [pageIndex]="historyPageIndex()"
+    [pageSize]="historyPageSize()"
+    [pageSizeOptions]="[10, 20, 50]"
+    (page)="onHistoryPageChange($event)"
+  />
+}
