@@ -1,0 +1,81 @@
+# Demo-only Postgres via StatefulSet + PVC. A real deployment would use a managed Postgres
+# instance (e.g. Cloud SQL, RDS, Cloud Memorystore-adjacent equivalents) instead of running the
+# database itself inside the cluster -- see README "Known simplifications".
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: flowpay
+spec:
+  clusterIP: None # headless -- StatefulSet pods get stable DNS (postgres-0.postgres.flowpay...)
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: flowpay
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: flowpay-backend-config
+                  key: DB_USERNAME
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowpay-backend-secret
+                  key: DB_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: flowpay-backend-config
+                  key: DB_NAME
+            # Postgres's own image docs recommend a subdirectory of the mount point, not the mount
+            # point itself, to avoid "initdb: directory not empty" from a stray lost+found dir some
+            # volume types create.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "flowpay"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

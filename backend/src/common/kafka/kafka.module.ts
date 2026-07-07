@@ -10,6 +10,9 @@ import { EVENT_CONSUMER, EVENT_PRODUCER } from './kafka.tokens';
     { provide: EVENT_PRODUCER, useExisting: KafkaEventProducer },
     { provide: EVENT_CONSUMER, useExisting: KafkaEventConsumer },
   ],
-  exports: [EVENT_PRODUCER, EVENT_CONSUMER],
+  // KafkaEventProducer itself is exported (alongside the interface tokens domain code should
+  // prefer) specifically so HealthService can call its isConnected() -- a health check is
+  // infrastructure-level, not a domain concern the EventProducer interface should carry.
+  exports: [EVENT_PRODUCER, EVENT_CONSUMER, KafkaEventProducer],
 })
 export class KafkaModule {}

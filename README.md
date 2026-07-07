@@ -468,9 +468,11 @@ still sends exactly one email.
 ## Client Console (frontend)
 
 An Angular 22 standalone-components SPA (`frontend/`), Angular Material for the UI, signals for
-local component state. It talks to the backend exclusively through `/api/v1` — the backend doesn't
-enable CORS, so the dev server proxies `/api` to it (see `frontend/proxy.conf.js`) rather than
-calling it cross-origin.
+local component state. It talks to the backend exclusively through `/api/v1`; in dev, the Angular
+dev server proxies `/api` to it (see `frontend/proxy.conf.js`), so the browser's requests are
+same-origin rather than cross-origin. The backend does support CORS for a frontend served from a
+genuinely different origin (`CORS_ORIGIN`, see "Design decisions" below), but the dev proxy means
+local development never exercises that path.
 
 **Pages**: login/register, a dashboard with one balance card per currency and quick actions
 (deposit, transfer, withdraw, convert, trade), a transactions table (server-side paginated,

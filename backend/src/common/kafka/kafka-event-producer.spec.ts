@@ -3,7 +3,13 @@ import { PinoLogger } from 'nestjs-pino';
 import { EnvConfig } from '../config/env.schema';
 import { KafkaEventProducer } from './kafka-event-producer';
 
+const eventHandlers = new Map<string, () => void>();
+
 const mockProducer = {
+  events: { CONNECT: 'producer.connect', DISCONNECT: 'producer.disconnect' },
+  on: jest.fn((event: string, handler: () => void) => {
+    eventHandlers.set(event, handler);
+  }),
   connect: jest.fn(),
   disconnect: jest.fn().mockResolvedValue(undefined),
   send: jest.fn().mockResolvedValue(undefined),
@@ -22,6 +28,7 @@ describe('KafkaEventProducer', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    eventHandlers.clear();
     configService = {
       get: jest.fn((key: string) =>
         key === 'KAFKA_CLIENT_ID' ? 'flowpay-backend' : 'localhost:9092',
@@ -72,5 +79,15 @@ describe('KafkaEventProducer', () => {
     await service.onModuleDestroy();
 
     expect(mockProducer.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports isConnected() based on the underlying producer CONNECT/DISCONNECT events', () => {
+    expect(service.isConnected()).toBe(false);
+
+    eventHandlers.get('producer.connect')?.();
+    expect(service.isConnected()).toBe(true);
+
+    eventHandlers.get('producer.disconnect')?.();
+    expect(service.isConnected()).toBe(false);
   });
 });

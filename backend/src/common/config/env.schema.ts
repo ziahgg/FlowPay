@@ -29,6 +29,11 @@ export const envSchema = z.object({
   SMTP_HOST: z.string().min(1).default('localhost'),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),
   MAIL_FROM: z.string().email().default('no-reply@flowpay.dev'),
+  // Comma-separated allowlist of origins allowed to call this API cross-origin (e.g. a frontend
+  // served from a different host/port than this API, such as the K8s deployment). The Angular dev
+  // server itself never needs an entry here -- its dev proxy makes every browser request
+  // same-origin, so no CORS headers are involved at all (see README "Quickstart").
+  CORS_ORIGIN: z.string().min(1).default('http://localhost:4200'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

@@ -87,6 +87,7 @@ services:
       SMTP_HOST: mailhog
       SMTP_PORT: 1025
       MAIL_FROM: no-reply@flowpay.dev
+      CORS_ORIGIN: http://localhost:4200
     ports:
       - "3000:3000"
     volumes:

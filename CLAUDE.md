@@ -38,8 +38,10 @@ backend/src/
 ```
 
 `frontend/` is the Angular "Client Console" — a standalone-components SPA that talks to the backend
-only through `/api/v1`, proxied in dev (see `frontend/proxy.conf.js`) since the backend does not
-enable CORS.
+only through `/api/v1`, proxied in dev (see `frontend/proxy.conf.js`) so the browser's requests are
+same-origin and never touch CORS at all. The backend does enable CORS (`CORS_ORIGIN`, an env-driven
+allowlist -- see `main.ts`) for the case of a frontend served from a different origin than the API
+(e.g. a production deployment), but that's a separate, additive concern from the dev proxy.
 
 ```
 frontend/src/app/

@@ -10,6 +10,7 @@ export class KafkaEventProducer implements EventProducer, OnModuleInit, OnModule
   private readonly producer: Producer;
   private retryTimer: NodeJS.Timeout | null = null;
   private destroyed = false;
+  private connected = false;
 
   constructor(
     configService: ConfigService<EnvConfig, true>,
@@ -27,6 +28,20 @@ export class KafkaEventProducer implements EventProducer, OnModuleInit, OnModule
     });
     this.producer = kafka.producer();
     this.logger.setContext(KafkaEventProducer.name);
+
+    // Tracks connection state across the producer's whole lifecycle (not just the initial
+    // connect() attempt) so GET /health can report a broker that dropped mid-run too, not just one
+    // that was never reachable at boot.
+    this.producer.on(this.producer.events.CONNECT, () => {
+      this.connected = true;
+    });
+    this.producer.on(this.producer.events.DISCONNECT, () => {
+      this.connected = false;
+    });
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 
   /**
