@@ -59,6 +59,8 @@ frontend/src/app/
 - **Validation**: `class-validator` / `class-transformer` for request DTOs, `zod` for environment
   config validated at startup
 - **Logging**: `nestjs-pino` (structured JSON logs), correlated by a request-id middleware
+- **API docs**: `@nestjs/swagger` at `/api/docs`, RFC 7807 (`application/problem+json`) errors from
+  one global exception filter, `helmet`, an env-driven CORS allowlist, `@nestjs/throttler`
 - **Testing**: Jest for unit tests, a separate Jest e2e config against a real Postgres instance
 - **Lint/format**: ESLint (flat config, typescript-eslint) + Prettier
 - **Frontend**: Angular 22, standalone components, Angular Material (Material 3 theming), signals
@@ -114,9 +116,13 @@ frontend/src/app/
    - Services never return TypeORM entities directly from a controller. Any entity with sensitive
      columns (e.g. `password_hash`) exposes an explicit mapping method (e.g. `toProfile()`) that
      returns a plain response DTO — this is the only path a controller may return to the client.
-   - Sensitive/mutating endpoints (auth, and anything similar later) are rate-limited with
-     `@nestjs/throttler`, applied locally via `@UseGuards(ThrottlerGuard)` on the owning controller
-     rather than globally, so unrelated endpoints aren't throttled by default.
+   - `@nestjs/throttler` is applied **globally** via `APP_GUARD` in `CommonModule` (`@Global()`,
+     the same reasoning nestjs-pino's `LoggerModule` already relies on for `PinoLogger` needing no
+     explicit import anywhere) with a generous baseline (60 req/min/IP) — a sane app-wide abuse
+     safety net, not a UX constraint. A specific sensitive endpoint (today: auth register/login)
+     overrides that default with a much stricter limit via `@Throttle({ default: { limit, ttl } })`
+     on the controller method, never its own separate `ThrottlerModule.forRoot()` — two independent
+     throttler configs in the same app is a DI-scoping trap, not just redundant.
    - `JwtAuthGuard` (route auth) and `RolesGuard` + `@Roles(...)` (authorization) are separate
      guards, composed as `@UseGuards(JwtAuthGuard, RolesGuard)` on any endpoint that needs both.
    - One-off idempotent scripts (e.g. dev/admin seeding) live in `src/scripts/`, run via
@@ -311,6 +317,34 @@ frontend/src/app/
       (so a dead broker fails fast instead of leaving sockets/timers open past `onModuleDestroy()`)
       also disables kafkajs's default crash-auto-restart as a side effect. Every retry loop cancels
       its own pending timer in `onModuleDestroy()`.
+
+12. **Every endpoint is documented in Swagger, and every error response is RFC 7807.**
+    - Every controller gets `@ApiTags(...)`; every protected one gets `@ApiBearerAuth('access-token')`
+      (the same scheme name registered once in `main.ts`'s `DocumentBuilder`); every method gets
+      `@ApiOperation` plus an `@ApiResponse` per status code it can actually return (success and
+      every realistic error), and every DTO field gets `@ApiProperty`/`@ApiPropertyOptional` with a
+      realistic `example`. A new endpoint without Swagger annotations is as incomplete as one
+      without a test — both are "done, docs later," which this project doesn't do.
+    - `PaginatedResponseDto<T>`'s generic `data` array can't be inferred by `@nestjs/swagger` at
+      decoration time (TS generics erase at runtime) — use the `ApiPaginatedResponse(Model)`
+      decorator (`common/decorators/`) rather than hand-rolling the `allOf`/`getSchemaPath` schema
+      composition per controller.
+    - `AllExceptionsFilter` (`common/filters/`) is the **only** place an error response is shaped,
+      and every error is `application/problem+json` (RFC 7807: `type`, `title`, `status`, `detail`,
+      `instance`, plus a `requestId` extension member correlating back to the structured pino log
+      line the same filter emits) — never a bespoke `{statusCode, message}` shape from a controller
+      or another filter. `title` comes from Node's own `http.STATUS_CODES` lookup (the standard
+      reason phrase), not from parsing the exception's class name.
+    - Helmet and an env-driven CORS allowlist (`CORS_ORIGIN`) are applied once in `main.ts`, ahead
+      of the global prefix/validation pipe/Swagger setup. Helmet's CSP is relaxed
+      (`script-src`/`style-src` allow `'unsafe-inline'`) specifically because Swagger UI at
+      `/api/docs` renders inline `<script>`/`<style>` tags — every other route returns JSON only,
+      which CSP doesn't apply to, so this relaxation is scoped to exactly what the docs page needs
+      and nothing else.
+    - `GET /health`'s `status`/`db` fields are the readiness signal (Postgres only); `kafka` is a
+      separate, informational field that never flips `status` or the HTTP code — a degraded broker
+      delays notifications, not the API's own availability. Don't fold Kafka into the same
+      up/down verdict as the database; they fail independently and should be reported that way.
 
 ## Local development
 
