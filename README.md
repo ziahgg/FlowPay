@@ -1,10 +1,99 @@
 # FlowPay
 
 FlowPay is a portfolio-grade **simulated** crypto & fiat payment and trading platform, modeled on
-the architecture of regulated payment institutions. All money, transfers, and market activity are
-simulated in Postgres — there is no real currency and no real blockchain involved. The backend is
-a NestJS modular monolith (designed so modules can later be split into microservices); the
-frontend is an Angular "Client Console" SPA that talks to it over `/api/v1`.
+the architecture of regulated payment institutions (the kind of double-entry ledger, maker-checker
+approval, and idempotency discipline a real e-money license would demand). All money, transfers,
+and market activity are simulated in Postgres — there is no real currency and no real blockchain
+involved. The point isn't to move real value; it's to demonstrate the backend engineering practices
+that matter when correctness of money is non-negotiable: an append-only ledger that can't drift from
+its own derived balances, deadlock-safe concurrent locking, idempotent retries, and an event-driven
+architecture with a genuine extraction path to microservices — with every one of those claims backed
+by a test that would fail if the claim stopped being true.
+
+## Features
+
+- **Auth** — argon2-hashed passwords, short-lived JWTs, role-based guards (`user`/`admin`).
+- **Double-entry ledger** — every balance is a derived sum over an append-only journal, never a
+  mutable counter; one write path (`LedgerService.postEntry()`) enforces that for the whole app.
+- **Deposits & withdrawals** — withdrawals go through a maker-checker approval flow (hold → admin
+  approve/reject → settle or release), the same row-lock pattern trading's cancel-vs-fill race uses.
+- **Internal transfers** — idempotent via a required `Idempotency-Key` header, safely retryable.
+- **FX conversion** — live rates (CoinGecko, with a static fallback), spread-adjusted quotes, banker's
+  rounding, one shared quote/convert math path so they can't silently drift apart.
+- **Simulated spot trading** — market and limit orders against the platform itself, with a
+  background worker matching triggered limits and a row-lock guard against the cancel-vs-fill race.
+- **Event-driven notifications** — a transactional outbox publishes domain events to Kafka; a
+  narrowly-scoped consumer emails the affected user (via Mailhog in dev) — see "Event-driven
+  architecture" below for why this is the concrete proof the monolith could split into services.
+- **Angular Client Console** — a standalone-components SPA covering every feature above.
+- **Swagger/OpenAPI docs** at `/api/docs`, RFC 7807 error responses, helmet + CORS + rate limiting,
+  structured logs correlated end-to-end by request id, and Kubernetes manifests verified on
+  minikube — see "Deploying to Kubernetes" and "GitLab CI" below.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph client["Client"]
+        FE["Angular Client Console"]
+    end
+
+    subgraph backend["NestJS modular monolith"]
+        Auth["Auth / Users"]
+        Ledger["Ledger / Accounts"]
+        Money["Deposits / Withdrawals / Transfers"]
+        FX["FX conversion"]
+        Trading["Trading"]
+        Outbox["OutboxPublisherService"]
+    end
+
+    Notif["Notifications (Kafka consumer)"]
+
+    FE -- "/api/v1 (dev proxy, same-origin)" --> backend
+    Auth --> Ledger
+    Money --> Ledger
+    FX --> Ledger
+    Trading --> Ledger
+    Ledger --> PG[("Postgres (journal + balances)")]
+    Outbox -- "same tx as the write" --> PG
+    Outbox -- "flowpay.events" --> Kafka[("Kafka")]
+    Kafka --> Notif
+    Notif --> Mailhog["Mailhog (dev SMTP)"]
+    Notif --> Processed[("processed_events")]
+```
+
+Every module talks to every other module through an injected service, never by reaching into
+another module's tables directly (`notifications` is the extreme case — it depends on nothing but
+Kafka, its own `processed_events` table, and SMTP). That discipline is what makes "split into
+microservices later" a refactor instead of a rewrite; see `CLAUDE.md`'s "Architecture" section for
+the full reasoning.
+
+## Design decisions at a glance
+
+Each of these is explained in full where the feature that needs it is introduced below — this is
+just the map:
+
+- **Double-entry ledger, balanced per currency independently** (not just in aggregate) — see
+  "Ledger quickstart". A cached balance is always `Σcredits − Σdebits` over the journal; if the two
+  ever disagree, the journal wins.
+- **Deterministic lock ordering to avoid deadlocks** — `postEntry()` locks the accounts it touches
+  with `SELECT ... FOR UPDATE`, ordered by ascending account id, Postgres's own documented pattern
+  for transactions that lock overlapping row sets in different orders. See "Ledger quickstart".
+- **Idempotency via an atomic claim, not a lock** — `INSERT ... ON CONFLICT DO NOTHING` claims a
+  request key before the handler runs; the same handler's outcome replays byte-identical on retry.
+  See "Payments: idempotency & concurrency" under "Transfers quickstart".
+- **Maker-checker approval on withdrawals**, guarded by the same row-lock-inside-the-transaction
+  pattern trading's cancel-vs-fill race uses — see "Deposits & withdrawals quickstart".
+- **Transactional outbox for at-least-once event delivery** — an event row commits in the same
+  transaction as the domain write it describes, so it can be neither lost nor phantom; consumers
+  dedupe with the identical atomic-claim idiom idempotency uses. See "Event-driven architecture".
+- **Banker's rounding (`ROUND_HALF_EVEN`) for every money computation** that must truncate to a
+  currency's precision — chosen because it doesn't bias amounts in one direction over many
+  conversions. See "FX conversion quickstart".
+- **A concrete monolith-to-microservices extraction path** — `notifications` is deliberately built
+  as if it could be its own service tomorrow, and Kafka/rate-provider access both go through
+  strategy interfaces rather than concrete SDKs, for the same reason. See "Event-driven
+  architecture" and `CLAUDE.md`.
 
 ## Quickstart
 
@@ -639,9 +728,18 @@ show "no pipeline found," which is less honest than this section's explicit veri
 
 ## Known simplifications
 
+- **All money is simulated.** There is no real currency, no real blockchain, and no connectivity to
+  any real market, bank, or exchange anywhere in this app — every balance, transfer, and trade lives
+  entirely inside this Postgres instance. FX rates are the one exception that touches the real world
+  (CoinGecko's public API, read-only, with a static fallback — see "FX conversion quickstart"); no
+  money ever moves as a result.
 - **No refresh tokens.** Access tokens are short-lived (15 minutes, `JWT_EXPIRES_IN`) and there is
   no refresh-token flow — once a token expires, the client must log in again. This is intentionally
   out of scope for now.
+- **Every piece of infrastructure is single-node.** One Postgres instance, one Kafka broker (KRaft,
+  no replication), one backend replica by default — there's no clustering, sharding, or failover
+  anywhere. Fine at this app's demo scale; each "Known simplifications" subsection below notes the
+  specific production alternative (managed Postgres, multi-broker Kafka, a leader-elected worker).
 - **The ledger integration suite (`npm run test:integration`) requires a local Docker daemon** — it
   spins up a real, disposable Postgres via Testcontainers. `.gitlab-ci.yml`'s `integration` job runs
   it in CI via a privileged Docker-in-Docker service (see "GitLab CI" below) — this genuinely needs
