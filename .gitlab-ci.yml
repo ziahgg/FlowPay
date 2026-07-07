@@ -1,6 +1,11 @@
+# GitLab CI. NOTE: this pipeline only actually runs once this repository is connected to a real
+# GitLab project (native GitLab hosting, or GitLab's "CI/CD for external repositories" pointed at
+# this GitHub repo) -- see README "Known simplifications" for what that means for the pipeline
+# badges. The pipeline itself is written and reasoned about as if it will run for real.
 stages:
   - lint
   - test
+  - integration
   - build
 
 default:
@@ -40,13 +45,54 @@ test:
     DEPOSIT_MAX_AMOUNT: 50000
     TRANSFER_FEE_FLAT: 0
     IDEMPOTENCY_STALE_MS: 30000
+    FX_SPREAD_BPS: 50
+    RATE_CACHE_TTL_MS: 30000
+    KAFKA_BROKERS: localhost:9092
+    KAFKA_CLIENT_ID: flowpay-backend-ci
+    NOTIFICATIONS_CONSUMER_GROUP_ID: flowpay-notifications-ci
+    SMTP_HOST: localhost
+    SMTP_PORT: 1025
+    MAIL_FROM: no-reply@flowpay.dev
+    CORS_ORIGIN: http://localhost:4200
     POSTGRES_USER: flowpay
     POSTGRES_PASSWORD: flowpay
     POSTGRES_DB: flowpay
   script:
+    # No Kafka/Mailhog service here on purpose: KafkaEventProducer/NotificationsConsumerService are
+    # both designed to retry with backoff rather than block or crash app bootstrap when either is
+    # unreachable (see "Event-driven architecture" in the README) -- the e2e suite exercises that
+    # resilience path directly, the same way it's already been verified locally.
     - npm run test -- --ci
     - npm run migration:run
+    # e2e specs (fx, deposits/withdrawals, transfers, orders) all assume currencies already exist
+    # and just deposit into them -- exactly what `npm run seed` provides. Missing here before this
+    # was ever actually caught: this pipeline had never been run against a real runner (the repo
+    # currently lives on GitHub only -- see README), so this gap in the ORIGINAL pipeline predates
+    # this change and was silently never exercised until verified locally with gitlab-ci-local.
+    - npm run seed
     - npm run test:e2e -- --ci
+
+# Testcontainers creates ITS OWN disposable Postgres containers via the Docker API -- unlike the
+# `test` stage above, a `services: [postgres]` sidecar can't satisfy that; this job needs an
+# actual reachable Docker daemon (Docker-in-Docker), which is also why it's a separate stage rather
+# than folded into `test`.
+#
+# image: node:22, not the default:'s node:20 -- testcontainers pulls in undici@8.6.0, which
+# requires Node >=22.19.0 (an actual hard engine requirement, not a lint warning: node:20 throws
+# `TypeError: webidl.util.markAsUncloneable is not a function` the moment testcontainers is
+# imported). Caught by actually running this job, not by reading package.json's engines field --
+# there isn't one. Scoped to this job alone; lint/test/build stay on node:20 since nothing else in
+# the dependency tree needs newer Node.
+integration:
+  stage: integration
+  image: node:22
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - npm run test:integration
 
 build:
   stage: build
@@ -57,8 +103,44 @@ build:
       - backend/dist/
     expire_in: 1 week
 
+# kaniko, not Docker-in-Docker: it builds images without a Docker daemon at all, so this job needs
+# no privileged runner. That's a real, tested distinction, not a style preference -- the
+# `integration` job above genuinely cannot avoid privileged DinD (Testcontainers has no
+# daemonless mode), but this job doesn't need a daemon in the first place, so it shouldn't inherit
+# that requirement just for consistency. (Verified locally: kaniko builds
+# backend/Dockerfile successfully with zero Docker access; DinD attempted for this same build
+# failed here with "mount: permission denied (are you root?)" from the nested dockerd refusing to
+# start without --privileged -- see the `integration` job's comment for the same root cause.)
+#
+# Tags each image with BOTH the immutable commit SHA (exact reproducibility -- "deploy exactly
+# this build") and a floating "<branch>-latest" tag (convenience -- "deploy whatever's newest on
+# this branch"). Restricted to the default branch: pushing an image for every feature-branch push
+# would fill up the registry with images nothing ever deploys.
+docker-build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - >
+      echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR/backend"
+      --dockerfile "$CI_PROJECT_DIR/backend/Dockerfile"
+      --destination "$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA"
+      --destination "$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_REF_SLUG-latest"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# All three frontend jobs override the default node:20 with node:22: Angular 22's CLI hard-requires
+# Node >=22.22.3/24.15.0/26.0.0 and refuses to run at all on Node 20 ("The Angular CLI requires a
+# minimum Node.js version..."). Caught by actually running frontend-build here, the same root cause
+# already flagged separately for frontend/Dockerfile.dev's dev-server image.
 frontend-lint:
   stage: lint
+  image: node:22
   cache:
     key:
       files:
@@ -73,6 +155,7 @@ frontend-lint:
 
 frontend-test:
   stage: test
+  image: node:22
   cache:
     key:
       files:
@@ -87,6 +170,7 @@ frontend-test:
 
 frontend-build:
   stage: build
+  image: node:22
   cache:
     key:
       files:

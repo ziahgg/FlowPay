@@ -601,15 +601,52 @@ on inspection alone, both fixed in the manifests as committed:
   its infrastructure dependencies run correctly on Kubernetes; it isn't a complete production
   topology.
 
+## GitLab CI
+
+`.gitlab-ci.yml` defines four stages: `lint` → `test` (unit tests, migrations, e2e against a
+`postgres` service) → `integration` (the Testcontainers-backed ledger/orders-race/outbox suite,
+via Docker-in-Docker) → `build` (backend `nest build`, frontend `ng build`, and a kaniko-built
+backend Docker image). Every job except `docker-build` (needs real registry push credentials) was
+verified for real using [`gitlab-ci-local`](https://github.com/firecow/gitlab-ci-local), a tool
+that actually executes `.gitlab-ci.yml` jobs in Docker rather than just parsing the YAML — this
+caught and fixed four real bugs that a syntax read-through would have missed:
+
+- The `test` job never ran `npm run seed`, so currencies never existed — every FX/deposit/
+  transfer/order e2e test failed with 404s or on an undefined balance. This was a **pre-existing
+  gap in the original pipeline**, invisible until now because the pipeline had never actually been
+  executed (see the note on hosting below).
+- `testcontainers` pulls in `undici@8.6.0`, which hard-requires Node ≥22.19.0 — the default
+  `node:20` image threw `TypeError: webidl.util.markAsUncloneable is not a function` the instant
+  `@testcontainers/postgresql` was imported. Fixed by pinning `integration` to `image: node:22`.
+- Angular 22's CLI refuses to run at all below Node 22.22.3 — `frontend-lint`/`frontend-test`/
+  `frontend-build` all inherited the default `node:20` and failed identically. Fixed the same way,
+  pinning all three to `image: node:22` (the same root cause already flagged separately for
+  `frontend/Dockerfile.dev`'s dev-server image).
+- Attempting Docker-in-Docker for the image-build job failed locally with
+  `mount: permission denied (are you root?)` from the nested `dockerd` refusing to start without
+  `--privileged` — confirming DinD's well-documented privileged-runner requirement is real, not
+  theoretical. Switched `docker-build` to kaniko instead (verified separately: it built
+  `backend/Dockerfile` successfully with zero Docker daemon access), since kaniko doesn't need that
+  privilege in the first place — only `integration` (Testcontainers has no daemonless mode) still
+  requires a privileged runner, which is now the *only* job that does.
+
+**This repository currently lives on GitHub only** (`.gitlab-ci.yml` predates this pass, an
+intentional choice to demonstrate GitLab CI regardless of hosting — see `CLAUDE.md`). That means
+this pipeline doesn't run anywhere automatically yet; it needs either a native GitLab project or
+GitLab's "CI/CD for external repositories" pointed at this GitHub repo. No pipeline badges are
+included in this README for that reason — a badge for a pipeline that has never run would just
+show "no pipeline found," which is less honest than this section's explicit verification notes.
+
 ## Known simplifications
 
 - **No refresh tokens.** Access tokens are short-lived (15 minutes, `JWT_EXPIRES_IN`) and there is
   no refresh-token flow — once a token expires, the client must log in again. This is intentionally
   out of scope for now.
 - **The ledger integration suite (`npm run test:integration`) requires a local Docker daemon** — it
-  spins up a real, disposable Postgres via Testcontainers. It is not wired into `.gitlab-ci.yml`
-  because the current CI runner image (`node:20`) has no Docker socket available; running it in CI
-  would need a Docker-in-Docker-enabled runner.
+  spins up a real, disposable Postgres via Testcontainers. `.gitlab-ci.yml`'s `integration` job runs
+  it in CI via a privileged Docker-in-Docker service (see "GitLab CI" below) — this genuinely needs
+  a privileged runner; GitLab's free shared runners typically don't allow that, so a self-hosted or
+  otherwise privilege-enabled runner is required to actually execute this stage.
 - **`withdrawal_requests.settle_entry_id` is reused for both outcomes**: it holds the settle entry
   id on approval and the release entry id on rejection (there is no separate `release_entry_id`
   column), matching the originally specified schema.

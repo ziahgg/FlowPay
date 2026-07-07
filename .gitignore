@@ -28,3 +28,6 @@ npm-debug.log*
 
 # TypeORM
 *.tsbuildinfo
+
+# gitlab-ci-local cache/output (see README "GitLab CI" section)
+.gitlab-ci-local/

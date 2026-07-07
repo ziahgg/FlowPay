@@ -63,8 +63,12 @@ frontend/src/app/
 - **Lint/format**: ESLint (flat config, typescript-eslint) + Prettier
 - **Frontend**: Angular 22, standalone components, Angular Material (Material 3 theming), signals
   for local component state, Vitest for unit tests (no Karma/Chrome dependency)
-- **CI**: GitLab CI, stages `lint -> test -> build`, backend `test` stage runs against a real
-  `postgres` service container; frontend jobs run the same three stages independently
+- **CI**: GitLab CI, stages `lint -> test -> integration -> build`. Backend `test` runs against a
+  real `postgres` service container; `integration` runs the Testcontainers suite via a privileged
+  Docker-in-Docker service (the only job that needs one); `build` includes a kaniko-built backend
+  Docker image (kaniko specifically because it needs no privileged runner, unlike DinD). Frontend
+  jobs run lint/test/build independently. See "GitLab CI" in [README.md](README.md) for what was
+  actually verified (via `gitlab-ci-local`, not just read) and the repo-hosting caveat.
 - **Containers**: Docker Compose for local dev (Postgres + backend + frontend, all with hot reload)
 
 ## Hard conventions (do not violate)
