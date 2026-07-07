@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: flowpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # TypeORM/NestJS's own connection retry (10 attempts, 3s apart) covers a Postgres that's
+      # merely slow to accept connections, but this initContainer avoids relying on that entirely:
+      # the main container never even starts until `pg_isready` succeeds, so the first thing a
+      # fresh minikube apply does isn't a guessing game against that retry budget.
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -p 5432 -U flowpay; do
+                echo "waiting for postgres..."
+                sleep 2
+              done
+      containers:
+        - name: backend
+          image: flowpay-backend:latest
+          # Built straight into minikube's own Docker daemon (see README) -- never pulled from a
+          # registry, so a stale cached image is the actual risk, not an unreachable registry.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: flowpay-backend-config
+            - secretRef:
+                name: flowpay-backend-secret
+          # Both probes hit the same /health endpoint the app already exposes -- a known
+          # simplification (see README "Known simplifications"): GET /health's `status` reflects
+          # Postgres only (not Kafka, which is deliberately non-fatal -- see health.service.ts), so
+          # a real Postgres outage fails both readiness AND liveness here, causing a restart loop
+          # rather than just a "not ready" pod. A production version would want a lighter
+          # liveness check (e.g. plain TCP/process check) so liveness answers "is this process
+          # stuck", not "are my dependencies healthy".
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: flowpay
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP

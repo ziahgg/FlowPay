@@ -523,6 +523,84 @@ this README), run `docker compose up` (or the two dev servers separately) and, a
   each fiat currency) rather than every combinatorial pair the backend would technically accept —
   a deliberate, sane default for the UI, not a backend restriction (see "Trading quickstart").
 
+## Deploying to Kubernetes (minikube)
+
+Manifests live under `deploy/k8s/`, applied in numeric order: namespace, ConfigMap (non-secret
+config), Secret (example values only), Postgres (StatefulSet + PVC), Kafka (single-node KRaft),
+Mailhog, then the backend Deployment + Service. Every step below was run end-to-end against a real
+minikube cluster while writing these manifests (register → login → deposit → outbox → Kafka →
+notification → Mailhog, the same flow "Event-driven architecture" describes) — not just written
+and assumed to work.
+
+```bash
+# 1. Start minikube (docker driver) and point your shell's Docker client at its daemon
+minikube start --driver=docker --cpus=4 --memory=6g
+eval $(minikube docker-env)
+
+# 2. Build the production image directly into minikube's own Docker daemon -- no registry needed
+docker build -t flowpay-backend:latest -f backend/Dockerfile backend/
+
+# 3. Apply the infra manifests first, then wait for them before applying the backend
+kubectl apply -f deploy/k8s/00-namespace.yaml -f deploy/k8s/01-configmap.yaml \
+  -f deploy/k8s/02-secret.yaml -f deploy/k8s/03-postgres.yaml \
+  -f deploy/k8s/04-kafka.yaml -f deploy/k8s/05-mailhog.yaml
+kubectl wait --for=condition=ready pod -l app=postgres -n flowpay --timeout=120s
+kubectl wait --for=condition=ready pod -l app=kafka -n flowpay --timeout=120s
+
+# 4. Apply the backend (its own initContainer waits for Postgres before starting)
+kubectl apply -f deploy/k8s/06-backend.yaml
+kubectl wait --for=condition=ready pod -l app=backend -n flowpay --timeout=120s
+
+# 5. Run migrations and seed currencies -- against the COMPILED output, not ts-node (the
+#    production image intentionally has no source .ts files or ts-node, see backend/Dockerfile)
+kubectl exec -n flowpay deploy/backend -- npm run migration:run:prod
+kubectl exec -n flowpay deploy/backend -- npm run seed:prod
+
+# 6. Reach the API
+kubectl port-forward -n flowpay svc/backend 3000:3000
+curl http://localhost:3000/api/v1/health
+# => {"status":"ok","db":"up","kafka":"up"}
+open http://localhost:3000/api/docs
+
+# Mailhog UI, to see a deposit/transfer/etc trigger an email exactly like the docker-compose flow:
+kubectl port-forward -n flowpay svc/mailhog 8025:8025
+open http://localhost:8025
+
+# Teardown
+kubectl delete namespace flowpay
+```
+
+Two real bugs were caught by actually running this against minikube rather than trusting the YAML
+on inspection alone, both fixed in the manifests as committed:
+- Kafka's readiness probe (`kafka-broker-api-versions.sh`) boots its own short-lived JVM per
+  invocation, which routinely exceeds a k8s exec probe's **default 1-second timeout** — every
+  invocation timed out, not failed on merit, leaving the pod permanently `0/1` despite Kafka logging
+  a fully successful startup. Fixed with an explicit `timeoutSeconds: 10`.
+- `migration:run`/`seed` (as run in local dev) use `typeorm-ts-node-commonjs`/`ts-node` against the
+  `.ts` sources — neither exists in the production image on purpose (see `backend/Dockerfile`).
+  `migration:run:prod`/`seed:prod` run the exact same code from `dist/` with the plain `typeorm`
+  CLI and plain `node`, which need no TypeScript tooling at runtime.
+
+### Known simplifications (Kubernetes)
+
+- **Both the readiness and liveness probes hit `GET /api/v1/health`**, which reports Postgres
+  connectivity (Kafka status is a separate, non-fatal field — see "Event-driven architecture").
+  A prolonged Postgres outage therefore fails liveness too, causing a restart loop rather than the
+  pod simply being marked not-ready — restarting the process doesn't fix a database outage. A
+  production version would give liveness a lighter check (e.g. a plain TCP/process check) so it
+  answers "is this process stuck", not "are my dependencies healthy".
+- **Postgres runs in-cluster via a StatefulSet + PVC**, purely for a self-contained demo. A real
+  deployment would point `DB_HOST`/`DB_PORT` at a managed instance (Cloud SQL, RDS, or equivalent)
+  instead of operating Postgres itself inside Kubernetes.
+- **Kafka is single-node and storage is ephemeral** (no PVC, matching `docker-compose.yml`'s own
+  kafka service) — acceptable because every publisher and consumer in this app already tolerates
+  redelivery by design (see CLAUDE.md convention 11), but a lost pod does lose any in-flight
+  unpublished/unconsumed messages. A production cluster would run a multi-broker Kafka (or a
+  managed equivalent) with real persistence.
+- **No frontend, Ingress, HPA, or NetworkPolicy manifests.** This deployment proves the backend +
+  its infrastructure dependencies run correctly on Kubernetes; it isn't a complete production
+  topology.
+
 ## Known simplifications
 
 - **No refresh tokens.** Access tokens are short-lived (15 minutes, `JWT_EXPIRES_IN`) and there is

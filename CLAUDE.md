@@ -316,3 +316,12 @@ Kafka + Mailhog + the API + the Angular dev server, all with hot reload. Backend
 Testcontainers-backed ledger integration suite and requires a local Docker daemon (see "Known
 simplifications" in [README.md](README.md)). Frontend: `npm run lint`, `npm test`, and
 `npm run build` run inside `frontend/`.
+
+Kubernetes manifests live under `deploy/k8s/` (namespace, ConfigMap/Secret, Postgres, Kafka,
+Mailhog, backend Deployment/Service) — see "Deploying to Kubernetes (minikube)" in
+[README.md](README.md) for the verified step-by-step. Two things that trip up a first deploy: the
+production image (`backend/Dockerfile`) has no `.ts` sources or `ts-node`, so migrations/seeding
+against it use `npm run migration:run:prod`/`npm run seed:prod` (plain `typeorm`/`node` against
+`dist/`), not the ts-node-based dev scripts; and Kafka's exec-based readiness probe needs an
+explicit `timeoutSeconds` well above the default 1s, since `kafka-broker-api-versions.sh` boots its
+own JVM per invocation.
